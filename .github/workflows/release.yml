@@ -87,24 +87,18 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      - name: Stage tarball
+      - name: Build AppImage
         id: package
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          set -euo pipefail
-          name="appshelf-$VERSION-x86_64-linux"
-          stage="dist/$name"
-          mkdir -p "$stage"
-          # Layout mirrors what `appshelf --install` expects: the binary sits
-          # beside ui/, vendor/ and packaging/.
-          install -m755 target/release/appshelf "$stage/appshelf"
-          cp -r ui vendor packaging "$stage/"
-          cp LICENSE README.md "$stage/"
-          rm -rf "$stage/ui/Commons"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ./scripts/build-appimage.sh dist
+          echo "name=AppShelf-$VERSION-x86_64.AppImage" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test the AppImage
+        run: |
+          ./dist/AppShelf-*-x86_64.AppImage --version
+          ./dist/AppShelf-*-x86_64.AppImage --help > /dev/null
 
       - name: Tag the release commit
         env:
@@ -125,14 +119,17 @@ jobs:
             ## Install
 
             ```bash
-            tar -xzf ${{ steps.package.outputs.name }}.tar.gz
-            cd ${{ steps.package.outputs.name }}
-            ./appshelf --install --integrate
+            chmod +x ${{ steps.package.outputs.name }}
+            ./${{ steps.package.outputs.name }}
             ```
 
-            Requires Omarchy's Quickshell `Commons` components at
+            AppShelf keeps itself up to date — `--self-check-update` and
+            `--self-update` work on the running AppImage, the same way it
+            updates every application it manages.
+
+            Requires `quickshell` and Omarchy's Commons components at
             `/usr/share/omarchy/shell/Commons`. Arch users can instead build the
             `PKGBUILD` in the source tree with `makepkg -si`.
           files: |
-            dist/${{ steps.package.outputs.name }}.tar.gz
-            dist/${{ steps.package.outputs.name }}.tar.gz.sha256
+            dist/${{ steps.package.outputs.name }}
+            dist/${{ steps.package.outputs.name }}.sha256

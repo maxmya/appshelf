@@ -6,7 +6,7 @@ use appshelf::{
 };
 use serde_json::{json, Value};
 use std::{
-    env,
+    env, fs,
     io::{self, BufRead, Write},
     os::unix::{fs::symlink, process::CommandExt},
     path::{Path, PathBuf},
@@ -121,12 +121,50 @@ fn ensure_tray_running(binary: &Path) {
             .spawn();
     }
 }
+/// Resolve the QML tree to hand to Quickshell, linking in Omarchy's shared
+/// Commons components. When the resources live on a read-only mount — an
+/// AppImage — the tree is staged into a writable runtime directory instead.
+fn ui_path(resources: &Path) -> Result<PathBuf> {
+    let shared = env::var_os("OMARCHY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"))
+        .join("shell/Commons");
+    let link_commons = |ui: &Path| -> Result<()> {
+        let commons = ui.join("Commons");
+        if commons.exists() {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            shared.is_dir(),
+            "Omarchy Quickshell Commons components are required"
+        );
+        symlink(&shared, commons)?;
+        Ok(())
+    };
+    let bundled = resources.join("ui");
+    if link_commons(&bundled).is_ok() {
+        return Ok(bundled);
+    }
+    let staged = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(manager::data_home)
+        .join("appshelf/ui");
+    fs::create_dir_all(&staged)?;
+    for entry in fs::read_dir(&bundled)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), staged.join(entry.file_name()))?;
+        }
+    }
+    link_commons(&staged)?;
+    Ok(staged)
+}
 fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association\nappshelf --version");
+        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --self-check-update\nappshelf --self-update\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association\nappshelf --version");
         return Ok(());
     }
     if matches!(
@@ -196,6 +234,16 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Some("--self-check-update") => {
+            let res = appshelf::selfupdate::check()?;
+            println!("{}", serde_json::to_string_pretty(&res)?);
+            return Ok(());
+        }
+        Some("--self-update") => {
+            let res = appshelf::selfupdate::apply()?;
+            println!("{}", serde_json::to_string_pretty(&res)?);
+            return Ok(());
+        }
         Some("--update") => {
             let id = args.get(1).context("Missing application ID")?;
             let res = manager.update(id)?;
@@ -219,23 +267,12 @@ fn main() -> Result<()> {
         _ => {}
     }
     anyhow::ensure!(args.len() <= 1, "Open one AppImage at a time");
-    let commons = resources.join("ui/Commons");
-    if !commons.exists() {
-        let shared = env::var_os("OMARCHY_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"))
-            .join("shell/Commons");
-        anyhow::ensure!(
-            shared.is_dir(),
-            "Omarchy Quickshell Commons components are required"
-        );
-        symlink(shared, commons)?;
-    }
+    let ui = ui_path(&resources)?;
     let exe = env::current_exe()?;
     ensure_tray_running(&exe);
     let error = Command::new("quickshell")
         .args(["-p"])
-        .arg(resources.join("ui"))
+        .arg(ui)
         .env("APPSHELF_BACKEND", env::current_exe()?)
         .env("APPSHELF_OPEN", args.first().cloned().unwrap_or_default())
         .exec();

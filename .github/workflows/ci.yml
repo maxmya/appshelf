@@ -62,3 +62,11 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Build AppImage
+        run: ./scripts/build-appimage.sh dist
+
+      - name: Smoke-test the AppImage
+        run: |
+          ./dist/AppShelf-*-x86_64.AppImage --version
+          ./dist/AppShelf-*-x86_64.AppImage --help > /dev/null
