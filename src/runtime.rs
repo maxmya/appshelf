@@ -357,10 +357,21 @@ pub fn metadata(runtime: &Path, path: &Path) -> Result<(String, Option<Vec<u8>>)
         .take(150)
         .collect();
     let icon_name = desktop_value(&body, "Icon").unwrap_or_default();
-    let stem = Path::new(&icon_name).file_stem();
+    // Icon= is usually a bare theme name, which is routinely reverse-DNS
+    // ("org.gnome.Loupe"). file_stem() would read ".Loupe" as an extension, so
+    // match on the whole file name instead.
+    let base = Path::new(&icon_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let wanted = format!("{}.png", base.strip_suffix(".png").unwrap_or(&base));
     let icon = names
         .iter()
-        .find(|s| s.ends_with(".png") && Path::new(s).file_stem() == stem)
+        .find(|s| {
+            Path::new(s)
+                .file_name()
+                .is_some_and(|n| n == wanted.as_str())
+        })
         .and_then(|s| read(s, 2 * 1024 * 1024).ok())
         .filter(|b| b.starts_with(b"\x89PNG\r\n\x1a\n"));
     Ok((name, icon))

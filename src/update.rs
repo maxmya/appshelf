@@ -175,7 +175,16 @@ pub fn check_update(app_path: &Path) -> Result<UpdateCheckResult> {
                 let size = asset["size"].as_u64();
 
                 if glob_match(pattern, name) {
-                    zsync_url = Some(download.to_string());
+                    // A pattern is conventionally the .zsync file, but some
+                    // images point it straight at the AppImage. Classify by
+                    // what the asset actually is, or the download never
+                    // resolves and updating fails with no URL.
+                    if name.ends_with(".zsync") {
+                        zsync_url = Some(download.to_string());
+                    } else {
+                        appimage_url = Some(download.to_string());
+                        appimage_size = size;
+                    }
                 } else if (name.ends_with(".AppImage") || name.ends_with(".appimage"))
                     && (name.contains("x86_64")
                         || name.contains("amd64")

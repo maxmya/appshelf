@@ -78,6 +78,10 @@ pub fn install(resources: &Path, integrate: bool) -> Result<()> {
     let icon = data.join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg"));
     fs::create_dir_all(icon.parent().unwrap())?;
     fs::copy(resources.join(format!("packaging/{APP_ID}.svg")), icon)?;
+    // Themes that skip scalable icons still find the rendered tile.
+    let raster = data.join(format!("icons/hicolor/512x512/apps/{APP_ID}.png"));
+    fs::create_dir_all(raster.parent().unwrap())?;
+    let _ = fs::copy(resources.join(format!("packaging/{APP_ID}.png")), raster);
     if integrate {
         let backup = data.join("appshelf/integration.json");
         if !backup.exists() {

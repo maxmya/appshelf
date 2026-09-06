@@ -127,6 +127,10 @@ ShellRoot {
             return;
         }
         if (!message.ok) {
+            // Clear progress flags first: an early return here used to leave
+            // the update spinner running forever on any backend error.
+            if (message.command === "check-update") { checkingUpdate = false; updateResult = null; updateStatusType = "error"; updateFeedback = message.error || "Update check failed"; }
+            if (message.command === "update") { updatingApp = false; updateStatusType = "error"; updateFeedback = message.error || "Update failed"; }
             failed = true;
             status = message.error;
             return;

@@ -33,11 +33,10 @@ impl Tray for AppShelfTray {
         }
     }
     fn icon_name(&self) -> String {
-        if self.updates_count > 0 {
-            "software-update-available".into()
-        } else {
-            "org.omarchy.appshelf".into()
-        }
+        // Always AppShelf's own icon — Status::NeedsAttention already conveys
+        // pending updates, and swapping in a stock glyph made the tray look
+        // like a different application.
+        "org.omarchy.appshelf".into()
     }
     fn tool_tip(&self) -> ToolTip {
         let description = if self.updates_count > 0 {
@@ -106,6 +105,24 @@ impl Tray for AppShelfTray {
 }
 
 impl AppShelfTray {
+    /// Identity of the current shelf contents, used to notice installs,
+    /// removals and updates performed by the window without polling for them
+    /// through the backend protocol.
+    pub fn shelf_fingerprint(manager: &Manager) -> Vec<String> {
+        let mut ids: Vec<String> = manager
+            .list()
+            .iter()
+            .map(|app| {
+                format!(
+                    "{}:{}",
+                    app["id"].as_str().unwrap_or_default(),
+                    app["name"].as_str().unwrap_or_default()
+                )
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
     pub fn check_now(&mut self, notify_if_none: bool) -> usize {
         let mut count = 0;
         let mut names = Vec::new();
@@ -128,7 +145,7 @@ impl AppShelfTray {
             let _ = Command::new("notify-send")
                 .args([
                     "--app-name=AppShelf",
-                    "--icon=software-update-available",
+                    "--icon=org.omarchy.appshelf",
                     "AppImage Updates Available",
                     &body,
                 ])
@@ -187,7 +204,7 @@ pub async fn run_tray(manager: Arc<Manager>) -> anyhow::Result<()> {
                     let _ = Command::new("notify-send")
                         .args([
                             "--app-name=AppShelf",
-                            "--icon=software-update-available",
+                            "--icon=org.omarchy.appshelf",
                             "AppImage Updates Available",
                             &body,
                         ])
@@ -202,6 +219,44 @@ pub async fn run_tray(manager: Arc<Manager>) -> anyhow::Result<()> {
                 .update(move |tray: &mut AppShelfTray| {
                     tray.updates_count = count;
                     tray.update_names = names;
+                })
+                .await;
+        }
+    });
+
+    // The shelf is shared state: the window installs and removes applications
+    // behind the tray's back, so follow the directory rather than waiting for
+    // the four-hourly update sweep.
+    let watch_mgr = manager.clone();
+    let watch_handle = handle.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3));
+        let mut known = {
+            let mgr = watch_mgr.clone();
+            tokio::task::spawn_blocking(move || AppShelfTray::shelf_fingerprint(&mgr))
+                .await
+                .unwrap_or_default()
+        };
+        loop {
+            interval.tick().await;
+            let mgr = watch_mgr.clone();
+            let current =
+                match tokio::task::spawn_blocking(move || AppShelfTray::shelf_fingerprint(&mgr))
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+            if current == known {
+                continue;
+            }
+            known = current;
+            // Counts refer to applications that may no longer be installed;
+            // drop them and let the next sweep, or the user, recompute.
+            let _ = watch_handle
+                .update(move |tray: &mut AppShelfTray| {
+                    tray.updates_count = 0;
+                    tray.update_names.clear();
                 })
                 .await;
         }

@@ -27,7 +27,10 @@ rm -rf "$appdir/ui/Commons"
 
 install -Dm644 packaging/org.omarchy.appshelf.desktop "$appdir/org.omarchy.appshelf.desktop"
 install -Dm644 packaging/org.omarchy.appshelf.svg "$appdir/org.omarchy.appshelf.svg"
-ln -sf org.omarchy.appshelf.svg "$appdir/.DirIcon"
+# PNG, not the SVG: .DirIcon is what thumbnailers and docks read, and PNG is
+# the format they all handle.
+install -Dm644 packaging/org.omarchy.appshelf.png "$appdir/org.omarchy.appshelf.png"
+ln -sf org.omarchy.appshelf.png "$appdir/.DirIcon"
 
 cat > "$appdir/AppRun" <<'RUN'
 #!/bin/sh

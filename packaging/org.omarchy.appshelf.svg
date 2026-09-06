@@ -1,6 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <rect x="7" y="7" width="50" height="50" rx="6" fill="#101315"/>
-  <g fill="none" stroke="#cacccc" stroke-width="3" stroke-linejoin="round">
-    <path d="M18 17h28v30H18zM18 27h28M18 37h28"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AppShelf">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1f22"/>
+      <stop offset="1" stop-color="#0e1113"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="112.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <g fill="none" stroke="#cacccc" stroke-width="24" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="136" y="128" width="240" height="256" rx="16"/>
+    <path d="M136 213.3h240M136 298.7h240"/>
   </g>
 </svg>

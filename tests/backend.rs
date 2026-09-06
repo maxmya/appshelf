@@ -231,10 +231,14 @@ impl Fixture {
         fs::set_permissions(dir.join("AppRun"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
             dir.join("fixture.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Runtime Fixture\nExec=AppRun\nIcon=fixture\n",
+            "[Desktop Entry]\nType=Application\nName=Runtime Fixture\nExec=AppRun\nIcon=org.test.Fixture\n",
         )
         .unwrap();
-        fs::write(dir.join("fixture.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        fs::write(
+            dir.join("org.test.Fixture.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
         let runtime = runtime::runtime_path(&resources()).unwrap();
         let mut images = Vec::new();
         for kind in ["SquashFS", "DwarFS"] {
