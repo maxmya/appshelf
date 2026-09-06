@@ -164,7 +164,7 @@ fn main() -> Result<()> {
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --self-check-update\nappshelf --self-update\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association\nappshelf --version");
+        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --shelf\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --self-check-update\nappshelf --self-update\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate|--no-integrate]\nappshelf --setup-state\nappshelf --restore-association\nappshelf --version");
         return Ok(());
     }
     if matches!(
@@ -179,7 +179,21 @@ fn main() -> Result<()> {
         return runtime::fetch(&resources);
     }
     if args.first().map(String::as_str) == Some("--install") {
-        return install::install(&resources, args.iter().any(|s| s == "--integrate"));
+        let association = if args.iter().any(|s| s == "--integrate") {
+            install::Association::Claim
+        } else if args.iter().any(|s| s == "--no-integrate") {
+            install::Association::Release
+        } else {
+            install::Association::Keep
+        };
+        return install::install(&resources, association);
+    }
+    if args.first().map(String::as_str) == Some("--setup-state") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&install::state(&resources)?)?
+        );
+        return Ok(());
     }
     if args.first().map(String::as_str) == Some("--restore-association") {
         return install::restore_association();
@@ -263,15 +277,25 @@ fn main() -> Result<()> {
             }
             return result;
         }
+        // Handled below: the shelf, with the first-run setup window suppressed.
+        Some("--shelf") => {}
         Some(s) if s.starts_with("--") => bail!("Unknown option {s}"),
         _ => {}
     }
+    let forced_shelf = args.first().map(String::as_str) == Some("--shelf");
+    let args = if forced_shelf { &args[1..] } else { &args[..] };
     anyhow::ensure!(args.len() <= 1, "Open one AppImage at a time");
+    // Running the AppImage itself is a request to set AppShelf up, not to use a
+    // copy that vanishes with its mount — unless --shelf says otherwise.
+    let setup = !forced_shelf && args.is_empty() && appshelf::selfupdate::appimage_path().is_some();
     let ui = ui_path(&resources)?;
-    ensure_tray_running(&manager.binary);
+    if !setup {
+        ensure_tray_running(&manager.binary);
+    }
     // Opening a file goes straight to the compact installer; the full shelf is
     // only worth loading when AppShelf is started on its own.
     let entry = match args.first() {
+        _ if setup => ui.join("setup.qml"),
         Some(_) => ui.join("install.qml"),
         None => ui,
     };

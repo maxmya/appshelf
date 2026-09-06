@@ -12,6 +12,71 @@ use std::{
 };
 const MIME: &str = "application/vnd.appimage";
 
+/// What an install should do about the `application/vnd.appimage` handler.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Association {
+    /// Leave whatever opener is configured alone.
+    Keep,
+    /// Make AppShelf the default opener, saving the previous one.
+    Claim,
+    /// Hand the association back to the previously saved opener.
+    Release,
+}
+
+fn commons_dir() -> PathBuf {
+    env::var_os("OMARCHY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"))
+        .join("shell/Commons")
+}
+/// Where `--install` puts the self-contained copy, and the symlink onto $PATH.
+pub fn program_dir() -> PathBuf {
+    data_home().join("appshelf/program")
+}
+pub fn binary_link() -> PathBuf {
+    home().join(".local/bin/appshelf")
+}
+fn is_default_opener() -> bool {
+    Command::new("xdg-mime")
+        .args(["query", "default", MIME])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == format!("{APP_ID}.desktop"))
+        .unwrap_or(false)
+}
+/// Everything the setup window needs to describe this machine: whether AppShelf
+/// is already installed, at which version, and who currently opens AppImages.
+pub fn state(resources: &Path) -> Result<Value> {
+    let program = program_dir().join("appshelf");
+    let link = binary_link();
+    let installed = program.is_file();
+    let installed_version = installed
+        .then(|| Command::new(&program).arg("--version").output().ok())
+        .flatten()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .trim_start_matches("appshelf ")
+                .to_string()
+        });
+    // `install` refuses to clobber a symlink it did not make; say so up front
+    // rather than after the button is pressed.
+    let blocked = (link.exists() || link.is_symlink())
+        && !(link.is_symlink() && fs::read_link(&link).map(|t| t == program).unwrap_or(false));
+    let icon = resources.join(format!("packaging/{APP_ID}.png"));
+    Ok(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "appimage": crate::selfupdate::appimage_path().map(|p| p.to_string_lossy().into_owned()),
+        "installed": installed,
+        "installed_version": installed_version,
+        "program": program.to_string_lossy(),
+        "binary": link.to_string_lossy(),
+        "blocked": blocked,
+        "integrated": is_default_opener(),
+        "icon": icon.is_file().then(|| icon.to_string_lossy().into_owned()),
+    }))
+}
+
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
@@ -29,19 +94,16 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub fn install(resources: &Path, integrate: bool) -> Result<()> {
+pub fn install(resources: &Path, association: Association) -> Result<()> {
     runtime::runtime_path(resources)?;
-    let commons = env::var_os("OMARCHY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"))
-        .join("shell/Commons");
+    let commons = commons_dir();
     ensure!(
         commons.is_dir(),
         "Omarchy Quickshell Commons components are required"
     );
     let data = data_home();
-    let destination = data.join("appshelf/program");
-    let binary = home().join(".local/bin/appshelf");
+    let destination = program_dir();
+    let binary = binary_link();
     if binary.exists() || binary.is_symlink() {
         ensure!(
             binary.is_symlink() && fs::read_link(&binary)? == destination.join("appshelf"),
@@ -82,7 +144,7 @@ pub fn install(resources: &Path, integrate: bool) -> Result<()> {
     let raster = data.join(format!("icons/hicolor/512x512/apps/{APP_ID}.png"));
     fs::create_dir_all(raster.parent().unwrap())?;
     let _ = fs::copy(resources.join(format!("packaging/{APP_ID}.png")), raster);
-    if integrate {
+    if association == Association::Claim {
         let backup = data.join("appshelf/integration.json");
         if !backup.exists() {
             let output = Command::new("xdg-mime")
@@ -107,6 +169,14 @@ pub fn install(resources: &Path, integrate: bool) -> Result<()> {
             "Could not register AppImage association"
         );
     }
+    // Giving the association back is only meaningful if we hold it and saved
+    // what came before; otherwise there is nothing to undo.
+    if association == Association::Release
+        && is_default_opener()
+        && data.join("appshelf/integration.json").is_file()
+    {
+        restore_association()?;
+    }
     let _ = Command::new("update-desktop-database")
         .arg(desktop.parent().unwrap())
         .status();
@@ -114,7 +184,7 @@ pub fn install(resources: &Path, integrate: bool) -> Result<()> {
     println!(
         "Installed {}{}",
         binary.display(),
-        if integrate {
+        if association == Association::Claim {
             " with Flea/AppImage integration"
         } else {
             ""

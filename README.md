@@ -33,6 +33,17 @@ This is an early local-app manager. Automatic updates and full migration of anot
 
 ## Get started
 
+The quickest route is the released AppImage: make it executable and run it. AppShelf recognises that it is running from its own AppImage and opens a setup window instead of the shelf, offering to install itself into `~/.local/bin` and your application launcher, with an optional tick to become your AppImage opener. "Open without installing" runs the shelf straight from the image for a look around.
+
+```bash
+chmod +x AppShelf-*-x86_64.AppImage
+./AppShelf-*-x86_64.AppImage
+```
+
+Installing matters because the copy inside an AppImage lives on a mount that disappears when the process exits — desktop entries and the tray need a copy that stays put. Keep the AppImage afterwards: it is what `appshelf --self-update` replaces.
+
+### From source
+
 You need an Omarchy installation with the Quickshell `Commons` components (developed on Omarchy 4.0.2 / Quickshell 0.3.1), Rust/Cargo, `curl`, `xdg-utils` and `desktop-file-utils`. Flea is optional. Supported runtime architectures are x86_64 and aarch64; the current test machine is x86_64.
 
 ```bash
@@ -49,13 +60,15 @@ Open **AppShelf** from your application launcher, or run:
 ~/.local/bin/appshelf
 ```
 
-`--install` makes a self-contained user-local installation. `--integrate` makes AppShelf the opener for type-2 AppImages, including from Flea, and saves your previous association. Omit `--integrate` to keep your existing file opener.
+`--install` makes a self-contained user-local installation. `--integrate` makes AppShelf the opener for type-2 AppImages, including from Flea, and saves your previous association. Omit `--integrate` to keep your existing file opener; `--no-integrate` hands a previously claimed association back.
 
 To restore that association later:
 
 ```bash
 appshelf --restore-association
 ```
+
+`appshelf --shelf` forces the full shelf even when run from the AppImage, and `appshelf --setup-state` prints what the setup window reads: the installed version, the linked binary and the current AppImage association.
 
 ## Background service and system tray
 
