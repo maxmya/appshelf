@@ -46,7 +46,7 @@ payload="$(mktemp -u)"
 # rewriting the ELF and disturbing anything else.
 read -r offset size <<<"$(readelf -S -W "$runtime" | awk '$2==".upd_info"{print strtonum("0x"$5), strtonum("0x"$6)}')"
 [ -n "${offset:-}" ] && [ "${size:-0}" -gt 0 ] || { echo "no .upd_info section in $runtime" >&2; exit 1; }
-info="gh-releases-zsync|maxmya|appshelf|latest|AppShelf-*-$arch.AppImage"
+info="gh-releases-zsync|maxmya|appshelf|latest|AppShelf-*-$arch.AppImage.zsync"
 [ "${#info}" -lt "$size" ] || { echo ".upd_info too long for the reserved section" >&2; exit 1; }
 
 cp "$runtime" "$output"
@@ -57,5 +57,14 @@ dd if=/dev/zero of="$output" bs=1 seek="$((offset + ${#info}))" count="$((size -
 
 cat "$payload" >> "$output"
 rm -f "$payload"
-(cd "$outdir" && sha256sum "$(basename "$output")" > "$(basename "$output").sha256")
+# The .upd_info pattern names this zsync file; update.rs reads its header for
+# the sha1 and length that decide whether a download is needed at all.
+base="$(basename "$output")"
+if [ -n "${APPSHELF_SKIP_ZSYNC:-}" ]; then
+  echo "APPSHELF_SKIP_ZSYNC set: not generating $base.zsync (releases must ship it)" >&2
+else
+  command -v zsyncmake >/dev/null || { echo "zsyncmake is required (package: zsync); set APPSHELF_SKIP_ZSYNC=1 for a local build" >&2; exit 1; }
+  (cd "$outdir" && zsyncmake -u "https://github.com/maxmya/appshelf/releases/download/v$version/$base" -o "$base.zsync" "$base")
+fi
+(cd "$outdir" && sha256sum "$base" > "$base.sha256")
 echo "$output"

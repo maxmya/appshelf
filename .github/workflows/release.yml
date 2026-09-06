@@ -61,7 +61,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
+          sudo apt-get install -y desktop-file-utils zsync
 
       - name: Install Rust toolchain
         run: |
@@ -132,4 +132,5 @@ jobs:
             `PKGBUILD` in the source tree with `makepkg -si`.
           files: |
             dist/${{ steps.package.outputs.name }}
+            dist/${{ steps.package.outputs.name }}.zsync
             dist/${{ steps.package.outputs.name }}.sha256
