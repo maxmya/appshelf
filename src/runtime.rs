@@ -32,6 +32,89 @@ pub fn sha256(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", digest.finalize()))
 }
+pub fn sha1(path: &Path) -> Result<String> {
+    use sha1::Digest;
+    let mut file = File::open(path)?;
+    let mut digest = sha1::Sha1::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Extract update information string from the AppImage's `.upd_info` ELF section.
+pub fn update_info(path: &Path) -> Result<Option<String>> {
+    let mut file = File::open(path)?;
+    let mut header = [0u8; 64];
+    file.read_exact(&mut header).context("Not an AppImage")?;
+    if &header[..4] != b"\x7fELF" || header[5] != 1 {
+        return Ok(None);
+    }
+    if header[4] != 2 {
+        // 64-bit ELF only
+        return Ok(None);
+    }
+    let u16_at = |n| u16::from_le_bytes(header[n..n + 2].try_into().unwrap()) as u64;
+    let e_shoff = u64::from_le_bytes(header[40..48].try_into().unwrap());
+    let e_shentsize = u16_at(58);
+    let e_shnum = u16_at(60);
+    let e_shstrndx = u16_at(62);
+
+    if e_shoff == 0 || e_shnum == 0 || e_shstrndx >= e_shnum {
+        return Ok(None);
+    }
+
+    file.seek(SeekFrom::Start(e_shoff + e_shstrndx * e_shentsize))?;
+    let mut sh_buf = [0u8; 64];
+    file.read_exact(&mut sh_buf)?;
+    let shstrtab_offset = u64::from_le_bytes(sh_buf[24..32].try_into().unwrap());
+    let shstrtab_size = u64::from_le_bytes(sh_buf[32..40].try_into().unwrap()) as usize;
+
+    if shstrtab_size > 1024 * 1024 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(shstrtab_offset))?;
+    let mut shstrtab = vec![0u8; shstrtab_size];
+    file.read_exact(&mut shstrtab)?;
+
+    for i in 0..e_shnum {
+        file.seek(SeekFrom::Start(e_shoff + i * e_shentsize))?;
+        file.read_exact(&mut sh_buf)?;
+        let sh_name = u32::from_le_bytes(sh_buf[0..4].try_into().unwrap()) as usize;
+        let sh_offset = u64::from_le_bytes(sh_buf[24..32].try_into().unwrap());
+        let sh_size = u64::from_le_bytes(sh_buf[32..40].try_into().unwrap()) as usize;
+
+        if sh_name >= shstrtab.len() {
+            continue;
+        }
+        let name_end = shstrtab[sh_name..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(shstrtab.len() - sh_name);
+        let sec_name = &shstrtab[sh_name..sh_name + name_end];
+
+        if sec_name == b".upd_info" {
+            if sh_size == 0 || sh_size > 4096 {
+                return Ok(None);
+            }
+            file.seek(SeekFrom::Start(sh_offset))?;
+            let mut content = vec![0u8; sh_size];
+            file.read_exact(&mut content)?;
+            let len = content
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(content.len());
+            let s = String::from_utf8_lossy(&content[..len]).trim().to_string();
+            return Ok(if s.is_empty() { None } else { Some(s) });
+        }
+    }
+    Ok(None)
+}
 pub fn runtime_path(resources: &Path) -> Result<PathBuf> {
     let path = resources
         .join("vendor")

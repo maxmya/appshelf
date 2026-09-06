@@ -252,7 +252,8 @@ impl Manager {
                     let folder = entry.path();
                     let path = folder.join("app.AppImage");
                     let icon = folder.join("icon.png");
-                    apps.push(json!({"id":id,"name":record.name,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified}));
+                    let update_info = runtime::update_info(&path).ok().flatten();
+                    apps.push(json!({"id":id,"name":record.name,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified,"update_info":update_info}));
                 }
             }
         }
@@ -311,7 +312,7 @@ impl Manager {
         self.refresh_database();
         Ok(json!({"id":id,"name":name}))
     }
-    fn write_launcher(&self, id: &str, name: &str, icon: bool) -> Result<()> {
+    pub fn write_launcher(&self, id: &str, name: &str, icon: bool) -> Result<()> {
         let folder = self.folder(id)?;
         let icon = if icon {
             folder.join("icon.png").to_string_lossy().into_owned()
@@ -492,12 +493,23 @@ impl Manager {
         });
         Ok(())
     }
-    fn refresh_database(&self) {
+    pub fn refresh_database(&self) {
         let _ = Command::new("update-desktop-database")
             .arg(&self.launchers)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+    pub fn check_update(&self, id: &str) -> Result<Value> {
+        let folder = self.folder(id)?;
+        let path = folder.join("app.AppImage");
+        ensure!(path.is_file(), "Installed AppImage file not found");
+        let res = crate::update::check_update(&path)?;
+        Ok(serde_json::to_value(&res)?)
+    }
+    pub fn update(&self, id: &str) -> Result<Value> {
+        let _lock = self.lock()?;
+        crate::update::apply_update(self, id)
     }
 }
 pub fn which(name: &str) -> Option<PathBuf> {

@@ -5,9 +5,9 @@ Button {
     id: control
     property bool primary: false
     property bool destructive: false
-    implicitHeight: Math.max(32, Theme.fontSize * 2.5)
-    implicitWidth: label.implicitWidth + 24
-    padding: 10
+    implicitHeight: Math.max(28, Math.round(Theme.fontSize * 2.2))
+    implicitWidth: label.implicitWidth + Math.min(22, Math.round(Theme.fontSize * 1.5))
+    padding: Math.min(10, Math.round(Theme.fontSize * 0.7))
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     opacity: enabled ? 1 : 0.4
@@ -24,6 +24,6 @@ Button {
         color: control.primary ? Theme.accent : (control.hovered ? Qt.alpha(Theme.foreground, 0.09) : "transparent")
         border.width: 1
         border.color: control.activeFocus ? Theme.accent : (control.primary ? Theme.accent : Theme.line)
-        radius: Math.min(Theme.radius, 6)
+        radius: Math.min(Theme.radius, Theme.scale(6))
     }
 }

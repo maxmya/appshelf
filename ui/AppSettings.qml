@@ -6,7 +6,7 @@ ColumnLayout {
     id: editor
     property string isolation: "off"
     property alias environmentText: variables.text
-    spacing: 12
+    spacing: Theme.scale(12)
     function load(app) {
         isolation = app.isolation || "off";
         environmentText = Object.keys(app.environment || {}).map(key => key + "=" + app.environment[key]).join("\n");
@@ -26,7 +26,7 @@ ColumnLayout {
     ShelfText { text: "Data isolation"; font.bold: true }
     RowLayout {
         Layout.fillWidth: true
-        spacing: 6
+        spacing: Theme.scale(6)
         ShelfButton { Layout.fillWidth: true; text: "Shared"; primary: editor.isolation === "off"; onClicked: editor.isolation = "off" }
         ShelfButton { Layout.fillWidth: true; text: "Config + data"; primary: editor.isolation === "config"; onClicked: editor.isolation = "config" }
         ShelfButton { Layout.fillWidth: true; text: "Home + config"; primary: editor.isolation === "home"; onClicked: editor.isolation = "home" }
@@ -42,7 +42,7 @@ ColumnLayout {
     ShelfText { text: "Environment variables"; font.bold: true }
     ScrollView {
         Layout.fillWidth: true
-        Layout.preferredHeight: 130
+        Layout.preferredHeight: Theme.scale(130)
         TextArea {
             id: variables
             placeholderText: "NAME=value\nOne variable per line; values are literal."
@@ -54,7 +54,7 @@ ColumnLayout {
             font.pixelSize: Theme.fontSize
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
-            padding: 10
+            padding: Theme.scale(10)
             background: Rectangle { color: Theme.surface; border.width: 1; border.color: variables.activeFocus ? Theme.accent : Theme.line }
         }
     }

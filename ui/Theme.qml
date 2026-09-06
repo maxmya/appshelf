@@ -15,12 +15,16 @@ Singleton {
     readonly property color line: Qt.alpha(foreground, 0.16)
     readonly property color secondary: Qt.tint(background, Qt.alpha(foreground, 0.67))
     readonly property string family: Style.font.family
-    readonly property int fontSize: Style.font.bodySmall
-    readonly property int smallSize: Style.font.caption
-    readonly property int gap: Style.spacing.rowGap
-    readonly property int padding: Style.spacing.rowPaddingX
+    property real zoom: 1.0
+    function scale(val) { return Math.round(val * zoom); }
+    readonly property int baseFontSize: Style.font.bodySmall
+    readonly property int baseSmallSize: Style.font.caption
+    readonly property int fontSize: Math.max(8, Math.round(baseFontSize * zoom))
+    readonly property int smallSize: Math.max(7, Math.round(baseSmallSize * zoom))
+    readonly property int gap: Math.round(Style.spacing.rowGap * zoom)
+    readonly property int padding: Math.round(Style.spacing.rowPaddingX * zoom)
     readonly property int radius: Style.cornerRadius
-    readonly property int rowHeight: Math.max(48, fontSize * 3.8)
+    readonly property int rowHeight: Math.max(scale(48), Math.round(fontSize * 3.8))
     property string name: "Omarchy"
     property string lastColors: ""
     property string lastShell: ""

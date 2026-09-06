@@ -9,8 +9,8 @@ use std::{
     env,
     io::{self, BufRead, Write},
     os::unix::{fs::symlink, process::CommandExt},
-    path::PathBuf,
-    process::Command,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 fn resources() -> Result<PathBuf> {
@@ -76,13 +76,15 @@ fn serve(manager: Manager) -> Result<()> {
                     )?;
                     Ok(Value::Null)
                 }
+                "check-update" => manager.check_update(id()?),
+                "update" => manager.update(id()?),
                 "list" => Ok(Value::Null),
                 _ => bail!("Unknown command"),
             }
         })();
         match result {
             Ok(result) => {
-                if ["list", "install", "uninstall"].contains(&command) {
+                if ["list", "install", "uninstall", "update"].contains(&command) {
                     discovered = discovery::discover(&manager, &[]);
                 }
                 emit(
@@ -94,12 +96,37 @@ fn serve(manager: Manager) -> Result<()> {
     }
     Ok(())
 }
+fn ensure_tray_running(binary: &Path) {
+    let check = Command::new("pgrep")
+        .args(["-f", "--", "appshelf --tray"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if check.map(|s| s.success()).unwrap_or(false) {
+        return;
+    }
+    let service_file = appshelf::service::service_dir().join("appshelf-tray.service");
+    if service_file.is_file() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "start", "appshelf-tray.service"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    } else {
+        let _ = Command::new(binary)
+            .arg("--tray")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
 fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association");
+        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association");
         return Ok(());
     }
     let resources = resources()?;
@@ -126,6 +153,46 @@ fn main() -> Result<()> {
                     &json!({"apps":manager.list(),"discovered":discovery::discover(&manager,&[])})
                 )?
             );
+            return Ok(());
+        }
+        Some("--tray") => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            return rt.block_on(appshelf::tray::run_tray(std::sync::Arc::new(manager)));
+        }
+        Some("--enable-service") => {
+            return appshelf::service::install_service(&manager.binary);
+        }
+        Some("--disable-service") => {
+            return appshelf::service::uninstall_service();
+        }
+        Some("--service-status") => {
+            return appshelf::service::status_service();
+        }
+        Some("--check-update") => {
+            if let Some(id) = args.get(1) {
+                let res = manager.check_update(id)?;
+                println!("{}", serde_json::to_string_pretty(&res)?);
+            } else {
+                for app in manager.list() {
+                    let id = app["id"].as_str().unwrap_or_default();
+                    let name = app["name"].as_str().unwrap_or_default();
+                    match manager.check_update(id) {
+                        Ok(res) => {
+                            let msg = res["message"].as_str().unwrap_or("");
+                            println!("{name}: {msg}");
+                        }
+                        Err(e) => println!("{name}: Error ({e})"),
+                    }
+                }
+            }
+            return Ok(());
+        }
+        Some("--update") => {
+            let id = args.get(1).context("Missing application ID")?;
+            let res = manager.update(id)?;
+            println!("{}", serde_json::to_string_pretty(&res)?);
             return Ok(());
         }
         Some("--launch") => {
@@ -157,6 +224,8 @@ fn main() -> Result<()> {
         );
         symlink(shared, commons)?;
     }
+    let exe = env::current_exe()?;
+    ensure_tray_running(&exe);
     let error = Command::new("quickshell")
         .args(["-p"])
         .arg(resources.join("ui"))

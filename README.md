@@ -57,6 +57,24 @@ To restore that association later:
 appshelf --restore-association
 ```
 
+## Background service and system tray
+
+AppShelf can run in your system tray (StatusNotifierItem) and monitor installed AppImages for updates in the background.
+
+To enable the background systemd user service and desktop autostart:
+```bash
+appshelf --enable-service
+```
+To run the system tray directly:
+```bash
+appshelf --tray
+```
+To check service status or disable:
+```bash
+appshelf --service-status
+appshelf --disable-service
+```
+
 For a development checkout, `./appshelf` builds and runs the debug binary. A local Arch package recipe is also included: run `makepkg -si` from the checkout. It is not an AUR package.
 
 ## Your first app
@@ -86,6 +104,10 @@ Press **F1** at any time on the main screen for the in-app guide.
 | `Delete` | Open uninstall confirmation |
 | `Ctrl+Enter` | Install from the preview |
 | `Ctrl+S` | Save launch settings |
+| `Ctrl+U` | Check for updates |
+| `Ctrl+B` | Toggle side panel |
+| `Ctrl +` / `Ctrl -` | Zoom in / out |
+| `Ctrl 0` | Reset zoom |
 | `Tab` / `Shift+Tab` | Move between controls |
 | `Space` / `Enter` | Activate a focused button |
 | `Escape` | Close a dialog or clear list search |

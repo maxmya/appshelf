@@ -106,6 +106,7 @@ pub fn install(resources: &Path, integrate: bool) -> Result<()> {
     let _ = Command::new("update-desktop-database")
         .arg(desktop.parent().unwrap())
         .status();
+    let _ = crate::service::install_service(&binary);
     println!(
         "Installed {}{}",
         binary.display(),
