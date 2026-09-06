@@ -126,7 +126,14 @@ fn main() -> Result<()> {
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association");
+        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate]\nappshelf --restore-association\nappshelf --version");
+        return Ok(());
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("--version") | Some("-V")
+    ) {
+        println!("appshelf {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let resources = resources()?;

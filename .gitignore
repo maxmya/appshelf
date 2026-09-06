@@ -6,3 +6,4 @@ build/
 pkg/
 vendor/uruntime-*
 target/
+dist/

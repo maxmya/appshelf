@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Re-publish even if the tag already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: resolve
+        run: |
+          version="$(./scripts/version.sh)"
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Forcing a re-publish of $tag"
+          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$tag is already released — bump the version with scripts/version.sh set X.Y.Z to cut a new one"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$tag is new — releasing"
+          fi
+
+  release:
+    name: Build and publish ${{ needs.version.outputs.tag }}
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Fetch pinned uruntime
+        run: ./target/release/appshelf --fetch-runtime
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Stage tarball
+        id: package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="appshelf-$VERSION-x86_64-linux"
+          stage="dist/$name"
+          mkdir -p "$stage"
+          # Layout mirrors what `appshelf --install` expects: the binary sits
+          # beside ui/, vendor/ and packaging/.
+          install -m755 target/release/appshelf "$stage/appshelf"
+          cp -r ui vendor packaging "$stage/"
+          cp LICENSE README.md "$stage/"
+          rm -rf "$stage/ui/Commons"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the release commit
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f -a "$TAG" -m "AppShelf $TAG"
+          git push -f origin "refs/tags/$TAG"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: AppShelf ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            tar -xzf ${{ steps.package.outputs.name }}.tar.gz
+            cd ${{ steps.package.outputs.name }}
+            ./appshelf --install --integrate
+            ```
+
+            Requires Omarchy's Quickshell `Commons` components at
+            `/usr/share/omarchy/shell/Commons`. Arch users can instead build the
+            `PKGBUILD` in the source tree with `makepkg -si`.
+          files: |
+            dist/${{ steps.package.outputs.name }}.tar.gz
+            dist/${{ steps.package.outputs.name }}.tar.gz.sha256
