@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+ui/Commons
+build/
+*.pkg.tar.*
+pkg/
+vendor/uruntime-*
+target/
