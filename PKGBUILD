@@ -1,6 +1,6 @@
 # Build a local package from this checkout: makepkg -f
 pkgname=appshelf
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Omarchy-first AppImage manager with a Quickshell UI'
 arch=('x86_64' 'aarch64')

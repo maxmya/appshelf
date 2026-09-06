@@ -17,7 +17,7 @@ ShellRoot {
     property bool failed: false
     property bool done: false
     property bool quitting: false
-    property string status: "Reading AppImage…"
+    property string status: ""
     readonly property string target: Quickshell.env("APPSHELF_OPEN")
 
     function size(bytes) {
@@ -34,29 +34,25 @@ ShellRoot {
         else Quickshell.execDetached(["kill", String(Quickshell.processId)]);
     }
     function install() {
-        if (busy || !preview) return;
-        busy = true; failed = false; status = "Copying and installing…";
+        if (busy || done || !preview) return;
+        busy = true; failed = false; status = "";
         backend.write(JSON.stringify({command: "install", path: String(preview.path)}) + "\n");
     }
     function receive(message) {
         if (message.event === "quit") { Quickshell.execDetached(["kill", String(Quickshell.processId)]); return; }
         if (message.event === "ready") {
             ready = true;
-            if (!target) { failed = true; status = "No AppImage was given to install"; return; }
+            if (!target) { failed = true; status = "No AppImage given"; return; }
             backend.write(JSON.stringify({command: "inspect", path: String(target)}) + "\n");
             return;
         }
         busy = false;
         if (!message.ok) { failed = true; status = message.error; return; }
-        if (message.command === "inspect") { preview = message.result; status = ""; return; }
-        if (message.command === "install") {
-            done = true;
-            status = "Installed · original file kept";
-            closeTimer.start();
-        }
+        if (message.command === "inspect") { preview = message.result; return; }
+        if (message.command === "install") { done = true; closeTimer.start(); }
     }
 
-    Timer { id: closeTimer; interval: 1100; onTriggered: root.quit() }
+    Timer { id: closeTimer; interval: 900; onTriggered: root.quit() }
 
     Process {
         id: backend
@@ -66,12 +62,12 @@ ShellRoot {
         stdout: SplitParser {
             onRead: data => {
                 try { root.receive(JSON.parse(data)); }
-                catch (error) { root.failed = true; root.busy = false; root.status = "Backend response error: " + error; }
+                catch (error) { root.failed = true; root.busy = false; root.status = "Backend error: " + error; }
             }
         }
         stderr: StdioCollector { onStreamFinished: if (text) console.warn(text) }
         onExited: (code, exitStatus) => {
-            if (!root.quitting) { root.ready = false; root.busy = false; root.failed = true; root.status = "Backend stopped. Close and reopen AppShelf."; }
+            if (!root.quitting) { root.ready = false; root.busy = false; root.failed = true; root.status = "Backend stopped"; }
         }
     }
     Connections { target: Quickshell; function onLastWindowClosed() { root.quit(); } }
@@ -88,76 +84,93 @@ ShellRoot {
     FloatingWindow {
         id: window
         title: "Install AppImage"
-        implicitWidth: Theme.scale(520)
-        implicitHeight: Theme.scale(300)
-        minimumSize: Qt.size(Theme.scale(420), Theme.scale(260))
-        maximumSize: Qt.size(Theme.scale(760), Theme.scale(420))
         color: Theme.background
+        implicitWidth: Theme.scale(460)
+        implicitHeight: content.implicitHeight + content.anchors.margins * 2
+        minimumSize: Qt.size(Theme.scale(380), implicitHeight)
+        maximumSize: Qt.size(Theme.scale(720), implicitHeight)
 
         Shortcut { sequence: "Escape"; enabled: !root.busy; onActivated: root.quit() }
-        Shortcut { sequences: ["Return", "Enter", "Ctrl+Return"]; enabled: !root.busy && !root.done && !!root.preview; onActivated: root.install() }
+        Shortcut { sequences: ["Return", "Enter"]; enabled: !root.busy && !root.done && !!root.preview; onActivated: root.install() }
 
         ColumnLayout {
+            id: content
             anchors.fill: parent
-            anchors.margins: Theme.scale(24)
-            spacing: Theme.scale(14)
+            anchors.margins: Theme.scale(20)
+            spacing: Theme.scale(16)
 
-            ShelfText {
-                text: "Install AppImage"
-                font.pixelSize: Theme.fontSize + Theme.scale(6)
-                font.bold: true
-            }
-            ShelfText {
+            RowLayout {
                 Layout.fillWidth: true
-                visible: !!root.preview
-                text: root.preview ? root.preview.name : ""
-                color: Theme.accent
-                font.pixelSize: Theme.fontSize + Theme.scale(2)
-                wrapMode: Text.Wrap
+                spacing: Theme.scale(14)
+
+                Rectangle {
+                    implicitWidth: Theme.scale(46)
+                    implicitHeight: Theme.scale(46)
+                    radius: Math.min(Theme.radius, Theme.scale(10))
+                    color: icon.status === Image.Ready ? "transparent" : Qt.alpha(Theme.accent, 0.14)
+                    border.width: icon.status === Image.Ready ? 0 : 1
+                    border.color: Qt.alpha(Theme.accent, 0.35)
+
+                    ShelfText {
+                        anchors.centerIn: parent
+                        visible: icon.status !== Image.Ready
+                        text: root.preview && root.preview.name ? root.preview.name.charAt(0).toUpperCase() : "?"
+                        color: Theme.accent
+                        font.pixelSize: Theme.fontSize + Theme.scale(8)
+                        font.bold: true
+                    }
+                    Image {
+                        id: icon
+                        anchors.fill: parent
+                        anchors.margins: Theme.scale(2)
+                        source: root.preview && root.preview.icon ? "file://" + root.preview.icon : ""
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        asynchronous: true
+                        visible: status === Image.Ready
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.scale(3)
+                    ShelfText {
+                        Layout.fillWidth: true
+                        text: root.preview ? root.preview.name : "Reading…"
+                        font.pixelSize: Theme.fontSize + Theme.scale(5)
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+                    ShelfText {
+                        Layout.fillWidth: true
+                        visible: !!root.preview
+                        text: root.preview ? root.size(root.preview.size) + " · " + root.preview.format : ""
+                        color: Theme.secondary
+                        font.pixelSize: Theme.smallSize
+                    }
+                }
             }
+
             ShelfText {
                 Layout.fillWidth: true
                 text: root.preview ? root.preview.path : root.target
                 color: Theme.secondary
                 font.pixelSize: Theme.smallSize
-                wrapMode: Text.WrapAnywhere
-                maximumLineCount: 2
                 elide: Text.ElideMiddle
             }
+
             ShelfText {
                 Layout.fillWidth: true
-                visible: !!root.preview
-                text: root.preview ? root.size(root.preview.size) + " · " + root.preview.format + " · FUSE-free" : ""
-                color: Theme.secondary
-                font.pixelSize: Theme.smallSize
-            }
-            ShelfText {
-                Layout.fillWidth: true
-                visible: !!root.preview && !!root.preview.note
-                text: root.preview ? root.preview.note : ""
-                color: Theme.secondary
-                font.pixelSize: Theme.smallSize
-                wrapMode: Text.WordWrap
-            }
-            ShelfText {
-                Layout.fillWidth: true
-                visible: !!root.status
-                text: root.status
+                visible: text !== ""
+                text: root.done ? "Installed" : (root.status || (root.preview && root.preview.note ? root.preview.note : ""))
                 color: root.failed ? Theme.danger : Theme.accent
-                wrapMode: Text.WordWrap
-            }
-            Item { Layout.fillHeight: true }
-            ShelfText {
-                Layout.fillWidth: true
-                visible: !!root.preview && !root.done
-                text: "A managed copy and launcher are added to your shelf. The original file stays where it is. Only install applications you trust."
-                color: Theme.secondary
                 font.pixelSize: Theme.smallSize
                 wrapMode: Text.WordWrap
-                lineHeight: 1.35
             }
+
             RowLayout {
                 Layout.fillWidth: true
+                Layout.topMargin: Theme.scale(2)
+                spacing: Theme.scale(8)
                 Item { Layout.fillWidth: true }
                 ShelfButton { text: root.done ? "Close" : "Cancel"; enabled: !root.busy; onClicked: root.quit() }
                 ShelfButton {

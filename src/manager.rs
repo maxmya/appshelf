@@ -241,18 +241,30 @@ impl Manager {
         ensure!(path.is_file(), "Choose an AppImage file");
         let (format, _) = runtime::filesystem(&path)?;
         let runtime = runtime::runtime_path(&self.resources)?;
-        let (name, note) = match runtime::metadata(&runtime, &path) {
-            Ok((name, _)) => (name, String::new()),
+        let (name, note, icon) = match runtime::metadata(&runtime, &path) {
+            Ok((name, icon)) => (name, String::new(), icon),
             Err(_) => (
                 path.file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned(),
                 "Filename used; embedded metadata could not be read.".into(),
+                None,
             ),
         };
+        // Stage the embedded icon so the installer window can display it.
+        let icon_path = icon.and_then(|bytes| {
+            let cache = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("appshelf");
+            fs::create_dir_all(&cache).ok()?;
+            let file = cache.join(format!("preview-{}.png", runtime::sha1(&path).ok()?));
+            fs::write(&file, bytes).ok()?;
+            Some(file)
+        });
         Ok(
-            json!({"path":path,"name":name,"size":path.metadata()?.len(),"format":format,"note":note}),
+            json!({"path":path,"name":name,"size":path.metadata()?.len(),"format":format,"note":note,"icon":icon_path}),
         )
     }
     pub fn list(&self) -> Vec<Value> {
