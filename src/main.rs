@@ -187,7 +187,7 @@ fn main() -> Result<()> {
     let manager = Manager::new(
         manager::data_home(),
         resources.clone(),
-        env::current_exe()?.canonicalize()?,
+        manager::launcher_path()?,
     )?;
     match args.first().map(String::as_str) {
         Some("--backend") => return serve(manager),
@@ -268,11 +268,16 @@ fn main() -> Result<()> {
     }
     anyhow::ensure!(args.len() <= 1, "Open one AppImage at a time");
     let ui = ui_path(&resources)?;
-    let exe = env::current_exe()?;
-    ensure_tray_running(&exe);
+    ensure_tray_running(&manager.binary);
+    // Opening a file goes straight to the compact installer; the full shelf is
+    // only worth loading when AppShelf is started on its own.
+    let entry = match args.first() {
+        Some(_) => ui.join("install.qml"),
+        None => ui,
+    };
     let error = Command::new("quickshell")
         .args(["-p"])
-        .arg(ui)
+        .arg(entry)
         .env("APPSHELF_BACKEND", env::current_exe()?)
         .env("APPSHELF_OPEN", args.first().cloned().unwrap_or_default())
         .exec();

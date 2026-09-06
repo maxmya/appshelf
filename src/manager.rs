@@ -53,6 +53,18 @@ pub fn home() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
+/// Stable path for re-invoking AppShelf later — systemd units, desktop entries
+/// and the tray. Inside an AppImage `current_exe()` points into a FUSE mount
+/// that disappears when the launching process exits, so prefer $APPIMAGE.
+pub fn launcher_path() -> std::io::Result<PathBuf> {
+    if let Some(raw) = std::env::var_os("APPIMAGE") {
+        let path = PathBuf::from(raw);
+        if path.is_file() {
+            return Ok(path.canonicalize().unwrap_or(path));
+        }
+    }
+    std::env::current_exe()?.canonicalize()
+}
 pub fn data_home() -> PathBuf {
     env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
