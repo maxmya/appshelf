@@ -33,22 +33,46 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Every push to main becomes a release. A commit that already carries a
+      # new version in Cargo.toml releases exactly that — a deliberate minor or
+      # major bump is never overridden. Otherwise the patch is walked forward
+      # to the first free tag and the bump is committed back to main, so the
+      # tree and the release always agree on which version this is.
       - id: resolve
         run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Two pushes in quick succession queue behind one another, and the
+          # second would otherwise resolve a version from the commit that
+          # triggered it and then fail to push on top of the first one's bump.
+          # Work from the branch as it stands instead.
+          git fetch --tags --force origin "${{ github.ref_name }}"
+          git checkout -B "${{ github.ref_name }}" "origin/${{ github.ref_name }}"
           version="$(./scripts/version.sh)"
-          tag="v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.force }}" = "true" ]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "Forcing a re-publish of $tag"
-          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "$tag is already released — bump the version with scripts/version.sh set X.Y.Z to cut a new one"
+            echo "Forcing a re-publish of v$version"
+          elif git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            major="${version%%.*}"
+            rest="${version#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            while git rev-parse -q --verify "refs/tags/v$major.$minor.$patch" >/dev/null; do
+              patch=$((patch + 1))
+            done
+            version="$major.$minor.$patch"
+            echo "Bumping to $version"
+            ./scripts/version.sh set "$version"
+            git add Cargo.toml Cargo.lock PKGBUILD
+            git commit -m "Bump to $version"
+            # Pushed with the default GITHUB_TOKEN, which deliberately does not
+            # start another workflow run — that is what keeps this from looping.
+            git push origin "HEAD:${{ github.ref_name }}"
           else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "$tag is new — releasing"
+            echo "v$version is new — releasing it as it stands"
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
   release:
     name: Build and publish ${{ needs.version.outputs.tag }}
@@ -56,7 +80,11 @@ jobs:
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
+      # `resolve` may have just pushed the version bump, so take the branch as
+      # it stands now rather than the commit that triggered this run.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Install test dependencies
         run: |

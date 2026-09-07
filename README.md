@@ -346,6 +346,8 @@ cargo build --release --locked
 scripts/build-appimage.sh dist
 ```
 
+**Every push to `main` publishes a release.** The `Release` workflow takes the version from `Cargo.toml`: if that tag is free it releases exactly that version, and otherwise it walks the patch number forward to the first free tag, commits the bump back to `main` and releases that. So a deliberate `scripts/version.sh set 0.7.0` in your own commit is honoured as a minor or major release, and a push that says nothing about versions still ships as the next patch. The bump commit is pushed with the default `GITHUB_TOKEN`, which by design starts no further workflow run, so this cannot loop.
+
 The script packs the release binary with `ui/`, `vendor/` and `packaging/` behind the same vendored uruntime AppShelf uses for managed applications, patches the `.upd_info` descriptor that makes `--self-update` work, and writes the `.zsync` and `.sha256` files a release needs beside it. `zsyncmake` is required; set `APPSHELF_SKIP_ZSYNC=1` for a local build that is not going to be released. `makepkg -si` builds the same tree as a local Arch package — it is not an AUR package.
 
 `tests/packages.rs` builds a `.deb` and an `.rpm` byte by byte — including the RPM lead and header AppShelf parses without the `rpm` tools — converts them, and checks the result with `pacman -Qip` and `pacman -Qlp`, which read a package file and need no privileges. It verifies that setuid bits and root ownership survive conversion, that pre-usr-merge paths are moved, and that a payload naming a path above its own root cannot escape. Nothing in the suite installs a package or opens a terminal.
