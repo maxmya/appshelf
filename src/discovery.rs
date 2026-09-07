@@ -1,6 +1,6 @@
 use crate::{
     manager::{home, modified, Manager},
-    runtime,
+    runtime, selfupdate,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -10,6 +10,35 @@ use std::{
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
+
+/// `~/Downloads` and `~/Desktop`, honouring `user-dirs.dirs` so localised or
+/// relocated folders are scanned too.
+fn user_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![home().join("Downloads"), home().join("Desktop")];
+    let config = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"));
+    if let Ok(body) = fs::read_to_string(config.join("user-dirs.dirs")) {
+        for line in body.lines() {
+            let line = line.trim();
+            let Some(value) = line
+                .strip_prefix("XDG_DOWNLOAD_DIR=")
+                .or_else(|| line.strip_prefix("XDG_DESKTOP_DIR="))
+            else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"');
+            let path = match value.strip_prefix("$HOME/") {
+                Some(rest) => home().join(rest),
+                None => PathBuf::from(value),
+            };
+            if path.is_absolute() && !dirs.contains(&path) {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs
+}
 
 /// Bounded, read-only discovery. No shell expansion and no candidate execution.
 pub fn discover(manager: &Manager, extra: &[PathBuf]) -> Vec<Value> {
@@ -28,6 +57,10 @@ pub fn discover(manager: &Manager, extra: &[PathBuf]) -> Vec<Value> {
             .join("appimages"),
         PathBuf::from("/opt"),
     ];
+    // Where AppImages actually land: a browser download, or a file dropped on
+    // the desktop. Leaving these out meant a machine full of AppImages still
+    // reported nothing found.
+    roots.extend(user_dirs());
     roots.extend_from_slice(extra);
     for root in roots {
         for entry in WalkDir::new(root)
@@ -110,6 +143,12 @@ pub fn discover(manager: &Manager, extra: &[PathBuf]) -> Vec<Value> {
         let Ok((format, _)) = runtime::filesystem(&path) else {
             continue;
         };
+        // AppShelf is not one of the applications AppShelf manages: installing
+        // its own AppImage would leave a second copy and a second launcher.
+        // It reports its own version and updates from Settings instead.
+        if selfupdate::is_appshelf(&path) {
+            continue;
+        }
         let id = format!(
             "external-{:x}",
             Sha256::digest(path.as_os_str().as_encoded_bytes())

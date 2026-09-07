@@ -1,5 +1,5 @@
 use crate::runtime;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -86,7 +86,7 @@ pub fn local_path(value: &str) -> Result<PathBuf> {
     } else {
         ensure!(
             !value.contains("://"),
-            "Choose a downloaded AppImage, not a web address"
+            "Choose a downloaded file, not a web address"
         );
         if let Some(s) = value.strip_prefix("~/") {
             home().join(s)
@@ -237,8 +237,13 @@ impl Manager {
         )?)
     }
     pub fn inspect(&self, value: &str) -> Result<Value> {
+        // A system package is read, converted and handed to pacman; it never
+        // becomes a managed copy, so it answers with its own shape entirely.
+        if let Some(preview) = crate::package::preview(value)? {
+            return Ok(preview);
+        }
         let path = local_path(value)?;
-        ensure!(path.is_file(), "Choose an AppImage file");
+        ensure!(path.is_file(), "Choose an application file");
         let (format, _) = runtime::filesystem(&path)?;
         let runtime = runtime::runtime_path(&self.resources)?;
         let (name, note, icon) = match runtime::metadata(&runtime, &path) {
@@ -252,6 +257,23 @@ impl Manager {
                 None,
             ),
         };
+        // The managed ID is the content hash, so the same hash answers whether
+        // this exact file is already on the shelf. Flea opens AppShelf with a
+        // path whether or not the application is installed; without this the
+        // window offered "Install" for something already installed and a
+        // second copy was the natural next click.
+        let id = runtime::sha256(&path)?;
+        let installed = self
+            .list()
+            .into_iter()
+            .find(|app| app["id"].as_str() == Some(id.as_str()));
+        // A different build at a path already on the shelf is an update of that
+        // application, not a new one.
+        let replaces = installed.is_none().then(|| {
+            self.list().into_iter().find(|app| {
+                app["source"].as_str() == path.to_str() && app["id"].as_str() != Some(id.as_str())
+            })
+        });
         // Stage the embedded icon so the installer window can display it.
         let icon_path = icon.and_then(|bytes| {
             let cache = std::env::var_os("XDG_RUNTIME_DIR")
@@ -259,13 +281,24 @@ impl Manager {
                 .unwrap_or_else(std::env::temp_dir)
                 .join("appshelf");
             fs::create_dir_all(&cache).ok()?;
-            let file = cache.join(format!("preview-{}.png", runtime::sha1(&path).ok()?));
+            let file = cache.join(format!("preview-{id}.png"));
             fs::write(&file, bytes).ok()?;
             Some(file)
         });
-        Ok(
-            json!({"path":path,"name":name,"size":path.metadata()?.len(),"format":format,"note":note,"icon":icon_path}),
-        )
+        Ok(json!({
+            "kind": "appimage",
+            "path": path,
+            "name": name,
+            "size": path.metadata()?.len(),
+            "format": format,
+            "note": note,
+            "icon": icon_path,
+            "id": id,
+            "installed_id": installed.as_ref().map(|app| app["id"].clone()),
+            "installed_name": installed.as_ref().map(|app| app["name"].clone()),
+            "replaces_id": replaces.as_ref().and_then(|a| a.as_ref()).map(|app| app["id"].clone()),
+            "replaces_name": replaces.as_ref().and_then(|a| a.as_ref()).map(|app| app["name"].clone()),
+        }))
     }
     pub fn list(&self) -> Vec<Value> {
         let mut apps = Vec::new();
@@ -277,16 +310,22 @@ impl Manager {
                     let path = folder.join("app.AppImage");
                     let icon = folder.join("icon.png");
                     let update_info = runtime::update_info(&path).ok().flatten();
-                    apps.push(json!({"id":id,"name":record.name,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified,"update_info":update_info}));
+                    apps.push(json!({"id":id,"kind":"appimage","name":record.name,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified,"update_info":update_info}));
                 }
             }
         }
         apps.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
+        // Packages sort after the shelf's own copies: they are on the system,
+        // not on the shelf, and the window rules a line between the two.
+        apps.extend(crate::package::list());
         apps
     }
     pub fn install(&self, value: &str, settings: Settings) -> Result<Value> {
-        validate_settings(&settings)?;
         let source = local_path(value)?;
+        if crate::package::detect(&source).is_some() {
+            return crate::package::install(value);
+        }
+        validate_settings(&settings)?;
         ensure!(source.is_file(), "Choose an AppImage file");
         let _lock = self.lock()?;
         let stage = tempfile::Builder::new()
@@ -359,6 +398,9 @@ impl Manager {
         atomic_json(&self.folder(id)?.join("record.json"), &record)
     }
     pub fn uninstall(&self, id: &str) -> Result<()> {
+        if let Some(name) = crate::package::id_name(id) {
+            return crate::package::uninstall(name);
+        }
         let _lock = self.lock()?;
         self.record(id)?;
         let folder = self.folder(id)?;
@@ -458,6 +500,11 @@ impl Manager {
         Ok((runtime::runtime_path(&self.resources)?, env))
     }
     pub fn launch(&self, id: &str) -> Result<()> {
+        // A package's application is whatever desktop entry it installed, run
+        // by the desktop the same way the launcher would run it.
+        if let Some(name) = crate::package::id_name(id) {
+            return crate::package::launch(name);
+        }
         let (runtime, env) = self.launch_spec(id)?;
         let logs = self.root.parent().unwrap().join("logs");
         fs::create_dir_all(&logs)?;
@@ -488,7 +535,9 @@ impl Manager {
         Ok(())
     }
     pub fn reveal(&self, id: &str, external: Option<&str>) -> Result<()> {
-        let folder = if let Some(path) = external {
+        let folder = if let Some(name) = crate::package::id_name(id) {
+            crate::package::reveal(name)?
+        } else if let Some(path) = external {
             local_path(path)?
                 .parent()
                 .context("No parent directory")?
@@ -525,6 +574,16 @@ impl Manager {
             .status();
     }
     pub fn check_update(&self, id: &str) -> Result<Value> {
+        // pacman is the authority on whether a system package has an update,
+        // and a converted one has no upstream in any repository at all. Say so
+        // instead of reporting a check that never happened.
+        if let Some(name) = crate::package::id_name(id) {
+            return Ok(json!({
+                "supported": false,
+                "has_update": false,
+                "message": format!("{name} is a system package — pacman updates it, not AppShelf."),
+            }));
+        }
         let folder = self.folder(id)?;
         let path = folder.join("app.AppImage");
         ensure!(path.is_file(), "Installed AppImage file not found");
@@ -532,6 +591,9 @@ impl Manager {
         Ok(serde_json::to_value(&res)?)
     }
     pub fn update(&self, id: &str) -> Result<Value> {
+        if let Some(name) = crate::package::id_name(id) {
+            bail!("{name} is a system package; update it with pacman -Syu");
+        }
         let _lock = self.lock()?;
         crate::update::apply_update(self, id)
     }

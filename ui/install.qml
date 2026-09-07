@@ -1,8 +1,9 @@
 //@ pragma AppId org.omarchy.appshelf
 //@ pragma ShellId appshelf-install
 //@ pragma NativeTextRendering
-// Compact installer shown when an AppImage is opened from the file manager.
-// Double-clicking a file should not have to load the whole shelf.
+// Compact installer shown when an application file is opened from the file
+// manager: an AppImage, or an Arch, Debian or RPM package. Double-clicking a
+// file should not have to load the whole shelf.
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
@@ -18,7 +19,20 @@ ShellRoot {
     property bool done: false
     property bool quitting: false
     property string status: ""
+    property bool launched: false
     readonly property string target: Quickshell.env("APPSHELF_OPEN")
+    // Flea opens AppShelf with a path whether or not that AppImage is already
+    // managed. Offering "Install" for something already on the shelf is how a
+    // second copy of the same application gets there.
+    readonly property bool alreadyInstalled: !!(preview && preview.installed_id)
+    // A system package is not copied onto the shelf: it is converted if it has
+    // to be, then handed to pacman in a terminal the user answers themselves.
+    readonly property bool isPackage: !!(preview && preview.kind === "package")
+    readonly property var warnings: preview && preview.warnings ? preview.warnings : []
+    readonly property bool launchable: !!(preview && preview.launchable)
+    // The same package at another version: pacman calls that an upgrade or a
+    // downgrade, and either way it replaces what is there.
+    readonly property string replacedVersion: preview && preview.installed_version && !alreadyInstalled ? String(preview.installed_version) : ""
 
     function size(bytes) {
         if (!bytes) return "";
@@ -34,15 +48,27 @@ ShellRoot {
         else Quickshell.execDetached(["kill", String(Quickshell.processId)]);
     }
     function install() {
-        if (busy || done || !preview) return;
+        if (busy || done || !preview || alreadyInstalled) return;
         busy = true; failed = false; status = "";
         backend.write(JSON.stringify({command: "install", path: String(preview.path)}) + "\n");
+    }
+    function launch() {
+        if (busy || done || !alreadyInstalled) return;
+        if (isPackage && !launchable) return;
+        busy = true; failed = false; status = "";
+        backend.write(JSON.stringify({command: "launch", id: String(preview.installed_id)}) + "\n");
+    }
+    function confirm() {
+        // An installed package with nothing to launch has no second action;
+        // offering one that cannot work is worse than offering none.
+        if (alreadyInstalled && (!isPackage || launchable)) launch();
+        else if (!alreadyInstalled) install();
     }
     function receive(message) {
         if (message.event === "quit") { Quickshell.execDetached(["kill", String(Quickshell.processId)]); return; }
         if (message.event === "ready") {
             ready = true;
-            if (!target) { failed = true; status = "No AppImage given"; return; }
+            if (!target) { failed = true; status = "No file given"; return; }
             backend.write(JSON.stringify({command: "inspect", path: String(target)}) + "\n");
             return;
         }
@@ -50,6 +76,7 @@ ShellRoot {
         if (!message.ok) { failed = true; status = message.error; return; }
         if (message.command === "inspect") { preview = message.result; return; }
         if (message.command === "install") { done = true; closeTimer.start(); }
+        if (message.command === "launch") { done = true; launched = true; closeTimer.start(); }
     }
 
     Timer { id: closeTimer; interval: 900; onTriggered: root.quit() }
@@ -76,22 +103,29 @@ ShellRoot {
         target: "appshelf-install"
         function state(): string {
             return JSON.stringify({ready: root.ready, busy: root.busy, failed: root.failed, done: root.done,
-                                   status: root.status, preview: root.preview, target: root.target});
+                                   status: root.status, preview: root.preview, target: root.target,
+                                   alreadyInstalled: root.alreadyInstalled, launched: root.launched,
+                                   isPackage: root.isPackage, warnings: root.warnings,
+                                   replacedVersion: root.replacedVersion});
         }
         function install(): bool { root.install(); return root.busy; }
+        function confirm(): bool { root.confirm(); return root.busy; }
     }
 
     FloatingWindow {
         id: window
-        title: "Install AppImage"
+        title: root.isPackage ? (root.alreadyInstalled ? "Open package" : "Install package")
+                              : (root.alreadyInstalled ? "Open AppImage" : "Install AppImage")
         color: Theme.background
         implicitWidth: Theme.scale(460)
         implicitHeight: content.implicitHeight + content.anchors.margins * 2
         minimumSize: Qt.size(Theme.scale(380), implicitHeight)
         maximumSize: Qt.size(Theme.scale(720), implicitHeight)
+        // A package brings warnings and a dependency list with it, so the
+        // window is sized from its content rather than from a fixed guess.
 
         Shortcut { sequence: "Escape"; enabled: !root.busy; onActivated: root.quit() }
-        Shortcut { sequences: ["Return", "Enter"]; enabled: !root.busy && !root.done && !!root.preview; onActivated: root.install() }
+        Shortcut { sequences: ["Return", "Enter"]; enabled: !root.busy && !root.done && !!root.preview; onActivated: root.confirm() }
 
         ColumnLayout {
             id: content
@@ -114,9 +148,9 @@ ShellRoot {
                     ShelfText {
                         anchors.centerIn: parent
                         visible: icon.status !== Image.Ready
-                        text: root.preview && root.preview.name ? root.preview.name.charAt(0).toUpperCase() : "?"
+                        text: root.isPackage ? "\uf187" : (root.preview && root.preview.name ? root.preview.name.charAt(0).toUpperCase() : "?")
                         color: Theme.accent
-                        font.pixelSize: Theme.fontSize + Theme.scale(8)
+                        font.pixelSize: Theme.fontSize + Theme.scale(root.isPackage ? 6 : 8)
                         font.bold: true
                     }
                     Image {
@@ -143,11 +177,22 @@ ShellRoot {
                     ShelfText {
                         Layout.fillWidth: true
                         visible: !!root.preview
-                        text: root.preview ? root.size(root.preview.size) + " · " + root.preview.format : ""
+                        text: !root.preview ? ""
+                              : root.isPackage ? (root.preview.version + "  ·  " + root.preview.arch + "  ·  " + root.preview.format)
+                                               : (root.size(root.preview.size) + " · " + root.preview.format)
                         color: Theme.secondary
                         font.pixelSize: Theme.smallSize
+                        elide: Text.ElideRight
                     }
                 }
+            }
+
+            ShelfText {
+                Layout.fillWidth: true
+                visible: root.isPackage && text !== ""
+                text: root.preview && root.preview.description ? root.preview.description : ""
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.smallSize
             }
 
             ShelfText {
@@ -158,10 +203,61 @@ ShellRoot {
                 elide: Text.ElideMiddle
             }
 
+            // pacman needs root and it asks real questions, so it runs in a
+            // terminal the user answers. Saying so before the window appears
+            // is the difference between an expected prompt and a surprise.
+            ShelfText {
+                Layout.fillWidth: true
+                visible: root.isPackage && !root.done && !root.alreadyInstalled
+                text: "A terminal opens for pacman and asks for your password."
+                color: Theme.secondary
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.smallSize
+                lineHeight: 1.35
+            }
+
+            ShelfText {
+                Layout.fillWidth: true
+                visible: root.replacedVersion !== ""
+                text: root.preview ? ("Replaces " + root.preview.name + " " + root.replacedVersion + ", which is installed now.") : ""
+                color: Theme.accent
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.smallSize
+            }
+
+            // Everything about this package that could take the user by
+            // surprise afterwards, said beforehand instead.
+            Repeater {
+                model: root.warnings
+                delegate: ShelfText {
+                    required property string modelData
+                    Layout.fillWidth: true
+                    text: "· " + modelData
+                    color: Theme.danger
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: Theme.smallSize
+                    lineHeight: 1.35
+                }
+            }
+
+            ShelfText {
+                Layout.fillWidth: true
+                visible: root.isPackage && !!root.preview && !!root.preview.depends && root.preview.depends.length > 0
+                text: root.preview && root.preview.depends ? ("Needs: " + root.preview.depends.join(", ")) : ""
+                color: Theme.secondary
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.smallSize
+                lineHeight: 1.35
+            }
+
             ShelfText {
                 Layout.fillWidth: true
                 visible: text !== ""
-                text: root.done ? "Installed" : (root.status || (root.preview && root.preview.note ? root.preview.note : ""))
+                text: root.done ? (root.launched ? "Launched" : "Installed")
+                                : (root.status
+                                   || (root.alreadyInstalled ? (root.isPackage ? "Already installed — pacman has this exact version." : "Already on your shelf — this exact AppImage is installed.") : "")
+                                   || (root.preview && root.preview.replaces_name ? "A different build of " + root.preview.replaces_name + " is on your shelf; this one is added alongside it." : "")
+                                   || (root.preview && root.preview.note ? root.preview.note : ""))
                 color: root.failed ? Theme.danger : Theme.accent
                 font.pixelSize: Theme.smallSize
                 wrapMode: Text.WordWrap
@@ -174,10 +270,16 @@ ShellRoot {
                 Item { Layout.fillWidth: true }
                 ShelfButton { text: root.done ? "Close" : "Cancel"; enabled: !root.busy; onClicked: root.quit() }
                 ShelfButton {
-                    text: root.busy ? "Installing…" : (root.done ? "Done" : "Install")
+                    text: root.busy ? (root.alreadyInstalled ? "Launching…" : (root.isPackage ? "Waiting for pacman…" : "Installing…"))
+                                    : (root.done ? "Done"
+                                       : (root.alreadyInstalled ? "Launch  ↗"
+                                          : (root.replacedVersion !== "" ? "Replace" : "Install")))
                     primary: true
+                    // An installed package with no launcher has nothing left to
+                    // do here, so the button says so rather than misfiring.
                     enabled: !root.busy && !root.done && !!root.preview
-                    onClicked: root.install()
+                             && !(root.alreadyInstalled && root.isPackage && !root.launchable)
+                    onClicked: root.confirm()
                 }
             }
         }

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  An Arch package is a plain zstd- or xz-compressed tarball, so the shared MIME
+  database recognises it only as `application/zstd` or `application/x-xz`.
+  Claiming those would make AppShelf the opener for every compressed file on the
+  machine, so the specific type is defined here instead and matched on the name
+  the format actually requires. `.deb` and `.rpm` already have types of their
+  own and are not redefined.
+
+  Two things are needed for the name to win. The glob weight is above the
+  default 50, so `*.pkg.tar.zst` outranks the `*.tar.zst` the shared database
+  already carries. And when more than one glob matches, the desktop sniffs the
+  content to choose between them and keeps only candidates that are subclasses
+  of what it found — a `.pkg.tar.zst` sniffs as `application/zstd`, so without
+  that ancestry the weight never gets consulted at all. Hence one `sub-class-of`
+  per compression the format is packed with.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-alpm-package">
+    <comment>Arch Linux package</comment>
+    <sub-class-of type="application/x-tar"/>
+    <sub-class-of type="application/zstd"/>
+    <sub-class-of type="application/x-xz"/>
+    <sub-class-of type="application/gzip"/>
+    <sub-class-of type="application/x-bzip"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.pkg.tar.zst" weight="60"/>
+    <glob pattern="*.pkg.tar.xz" weight="60"/>
+    <glob pattern="*.pkg.tar.gz" weight="60"/>
+    <glob pattern="*.pkg.tar.bz2" weight="60"/>
+    <glob pattern="*.pkg.tar.lzo" weight="60"/>
+    <glob pattern="*.pkg.tar" weight="60"/>
+  </mime-type>
+</mime-info>

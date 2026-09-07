@@ -1,6 +1,10 @@
 use crate::manager::home;
-use anyhow::Result;
-use std::{fs, path::Path, path::PathBuf, process::Command};
+use anyhow::{ensure, Result};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 pub fn service_dir() -> PathBuf {
     home().join(".config/systemd/user")
@@ -10,6 +14,8 @@ pub fn autostart_dir() -> PathBuf {
     home().join(".config/autostart")
 }
 
+/// Silent on stdout: the backend protocol shares it, so a stray status line
+/// would arrive at the window as an unparseable message.
 pub fn install_service(binary: &Path) -> Result<()> {
     let s_dir = service_dir();
     fs::create_dir_all(&s_dir)?;
@@ -36,7 +42,6 @@ pub fn install_service(binary: &Path) -> Result<()> {
         .args(["--user", "enable", "--now", "appshelf-tray.service"])
         .status();
 
-    println!("AppShelf background service and tray enabled (systemd user service + autostart)");
     Ok(())
 }
 
@@ -57,7 +62,6 @@ pub fn uninstall_service() -> Result<()> {
         .args(["--user", "daemon-reload"])
         .status();
 
-    println!("AppShelf background service and tray disabled");
     Ok(())
 }
 
@@ -67,5 +71,61 @@ pub fn status_service() -> Result<()> {
     let _ = Command::new("systemctl")
         .args(["--user", "status", "appshelf-tray.service"])
         .status();
+    Ok(())
+}
+
+/// Whether the tray is set to come back on the next login.
+pub fn service_installed() -> bool {
+    service_dir().join("appshelf-tray.service").is_file()
+}
+
+/// Whether a tray process is up right now. Started either by the systemd user
+/// unit or directly by the shelf window, so match on the command line rather
+/// than asking systemd.
+pub fn tray_running() -> bool {
+    Command::new("pgrep")
+        .args(["-f", "--", "appshelf --tray"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+pub fn start_tray(binary: &Path) -> Result<()> {
+    if tray_running() {
+        return Ok(());
+    }
+    if service_installed() {
+        let started = Command::new("systemctl")
+            .args(["--user", "start", "appshelf-tray.service"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if started {
+            return Ok(());
+        }
+    }
+    Command::new(binary)
+        .arg("--tray")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+pub fn stop_tray() -> Result<()> {
+    if service_installed() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "stop", "appshelf-tray.service"])
+            .status();
+    }
+    // A tray the window spawned directly is not the unit's child, so systemd
+    // stopping the unit does not reach it.
+    let _ = Command::new("pkill")
+        .args(["-f", "--", "appshelf --tray"])
+        .status();
+    ensure!(!tray_running(), "The tray is still running");
     Ok(())
 }

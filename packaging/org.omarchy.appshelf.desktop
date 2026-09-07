@@ -2,11 +2,11 @@
 Type=Application
 Version=1.0
 Name=AppShelf
-Comment=Manage AppImages with Omarchy
+Comment=Install and manage AppImages and system packages with Omarchy
 Exec=appshelf %f
 Icon=org.omarchy.appshelf
 Terminal=false
-Categories=Utility;
-MimeType=application/vnd.appimage;
-Keywords=AppImage;install;applications;Omarchy;
+Categories=Utility;PackageManager;
+MimeType=application/vnd.appimage;application/x-alpm-package;application/vnd.debian.binary-package;application/x-rpm;
+Keywords=AppImage;package;deb;rpm;pacman;install;applications;Omarchy;
 StartupWMClass=org.omarchy.appshelf

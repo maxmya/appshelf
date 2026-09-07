@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use appshelf::{
     discovery, install,
     manager::{self, Manager, Settings},
-    runtime,
+    runtime, selfupdate, service,
 };
 use serde_json::{json, Value};
 use std::{
@@ -10,7 +10,7 @@ use std::{
     io::{self, BufRead, Write},
     os::unix::{fs::symlink, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 
 fn resources() -> Result<PathBuf> {
@@ -25,13 +25,61 @@ fn resources() -> Result<PathBuf> {
     }
     bail!("AppShelf UI resources not found")
 }
+/// Everything the Settings view shows about this installation, refreshed after
+/// every command that can change it.
+fn preferences(manager: &Manager) -> Value {
+    json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "channel": selfupdate::channel(),
+        "tray_running": service::tray_running(),
+        "service_installed": service::service_installed(),
+        "binary": manager.binary.to_string_lossy(),
+        "program": install::program_dir().join("appshelf").to_string_lossy(),
+        "data": manager.root.parent().map(|p| p.to_string_lossy().into_owned()),
+        // Counted apart, because they are two different claims: one is what
+        // AppShelf keeps a copy of, the other what it asked pacman to install.
+        "managed": manager
+            .list()
+            .iter()
+            .filter(|app| app["kind"].as_str() != Some("package"))
+            .count(),
+        "packages": appshelf::package::registry().len(),
+    })
+}
+/// Check every managed application in one pass, so the window can offer the
+/// same sweep the tray performs on its own schedule.
+fn check_all(manager: &Manager) -> Value {
+    let mut updates = Vec::new();
+    let mut failed = Vec::new();
+    let apps: Vec<_> = manager
+        .list()
+        .into_iter()
+        .filter(|app| app["kind"].as_str() != Some("package"))
+        .collect();
+    for app in &apps {
+        let id = app["id"].as_str().unwrap_or_default();
+        let name = app["name"].as_str().unwrap_or_default();
+        match manager.check_update(id) {
+            Ok(result) if result["has_update"].as_bool().unwrap_or(false) => updates.push(json!({
+                "id": id,
+                "name": name,
+                "latest_version": result["latest_version"],
+            })),
+            Ok(_) => {}
+            Err(error) => failed.push(json!({"name": name, "error": format!("{error:#}")})),
+        }
+    }
+    json!({"checked": apps.len(), "updates": updates, "failed": failed})
+}
 fn emit(value: Value) {
     println!("{value}");
     let _ = io::stdout().flush();
 }
 fn serve(manager: Manager) -> Result<()> {
     let mut discovered = discovery::discover(&manager, &[]);
-    emit(json!({"event":"ready","apps":manager.list(),"discovered":discovered}));
+    emit(
+        json!({"event":"ready","apps":manager.list(),"discovered":discovered,"preferences":preferences(&manager)}),
+    );
     for line in io::stdin().lock().lines() {
         let line = line?;
         let request: Value = match serde_json::from_str(&line) {
@@ -78,6 +126,26 @@ fn serve(manager: Manager) -> Result<()> {
                 }
                 "check-update" => manager.check_update(id()?),
                 "update" => manager.update(id()?),
+                "check-all-updates" => Ok(check_all(&manager)),
+                "preferences" => Ok(preferences(&manager)),
+                "tray-start" => {
+                    service::start_tray(&manager.binary)?;
+                    Ok(preferences(&manager))
+                }
+                "tray-stop" => {
+                    service::stop_tray()?;
+                    Ok(preferences(&manager))
+                }
+                "service-enable" => {
+                    service::install_service(&manager.binary)?;
+                    Ok(preferences(&manager))
+                }
+                "service-disable" => {
+                    service::uninstall_service()?;
+                    Ok(preferences(&manager))
+                }
+                "self-check-update" => Ok(serde_json::to_value(selfupdate::check()?)?),
+                "self-update" => selfupdate::apply(),
                 "list" => Ok(Value::Null),
                 _ => bail!("Unknown command"),
             }
@@ -88,38 +156,13 @@ fn serve(manager: Manager) -> Result<()> {
                     discovered = discovery::discover(&manager, &[]);
                 }
                 emit(
-                    json!({"ok":true,"command":command,"result":result,"apps":manager.list(),"discovered":discovered}),
+                    json!({"ok":true,"command":command,"result":result,"apps":manager.list(),"discovered":discovered,"preferences":preferences(&manager)}),
                 );
             }
             Err(error) => emit(json!({"ok":false,"command":command,"error":format!("{error:#}")})),
         }
     }
     Ok(())
-}
-fn ensure_tray_running(binary: &Path) {
-    let check = Command::new("pgrep")
-        .args(["-f", "--", "appshelf --tray"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if check.map(|s| s.success()).unwrap_or(false) {
-        return;
-    }
-    let service_file = appshelf::service::service_dir().join("appshelf-tray.service");
-    if service_file.is_file() {
-        let _ = Command::new("systemctl")
-            .args(["--user", "start", "appshelf-tray.service"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    } else {
-        let _ = Command::new(binary)
-            .arg("--tray")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
 }
 /// Resolve the QML tree to hand to Quickshell, linking in Omarchy's shared
 /// Commons components. When the resources live on a read-only mount — an
@@ -164,7 +207,7 @@ fn main() -> Result<()> {
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("AppShelf — keyboard-first AppImage management for Omarchy\n\nappshelf [AppImage-or-file-URL]\nappshelf --shelf\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --self-check-update\nappshelf --self-update\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --fetch-runtime\nappshelf --install [--integrate|--no-integrate]\nappshelf --setup-state\nappshelf --restore-association\nappshelf --version");
+        println!("AppShelf — keyboard-first application management for Omarchy\n\nHandles AppImages, Arch packages (.pkg.tar.zst, .pkg.tar.xz),\nDebian packages (.deb) and RPM packages (.rpm).\n\nappshelf [file-or-file-URL]\nappshelf --shelf\nappshelf --tray\nappshelf --enable-service\nappshelf --disable-service\nappshelf --service-status\nappshelf --check-update [ID]\nappshelf --update ID\nappshelf --self-check-update\nappshelf --self-update\nappshelf --backend\nappshelf --launch ID\nappshelf --scan\nappshelf --inspect FILE\nappshelf --convert FILE [DIRECTORY]\nappshelf --fetch-runtime\nappshelf --install [--integrate|--no-integrate]\nappshelf --setup-state\nappshelf --restore-association\nappshelf --version");
         return Ok(());
     }
     if matches!(
@@ -214,6 +257,28 @@ fn main() -> Result<()> {
             );
             return Ok(());
         }
+        Some("--inspect") => {
+            let path = args.get(1).context("Missing file")?;
+            println!("{}", serde_json::to_string_pretty(&manager.inspect(path)?)?);
+            return Ok(());
+        }
+        // Conversion on its own, so what pacman would be handed can be read
+        // with pacman's own tools before anything is installed.
+        Some("--convert") => {
+            let source = manager::local_path(args.get(1).context("Missing file")?)?;
+            let kind = appshelf::package::detect(&source)
+                .context("That file is not a Debian, RPM or Arch package")?;
+            let info = appshelf::package::inspect(&source, kind)?;
+            let (built, _stage) = appshelf::package::convert(&source, &info)?;
+            let destination = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+                .join(built.file_name().context("Converted package has no name")?);
+            fs::copy(&built, &destination)?;
+            println!("{}", destination.display());
+            return Ok(());
+        }
         Some("--tray") => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -221,10 +286,16 @@ fn main() -> Result<()> {
             return rt.block_on(appshelf::tray::run_tray(std::sync::Arc::new(manager)));
         }
         Some("--enable-service") => {
-            return appshelf::service::install_service(&manager.binary);
+            appshelf::service::install_service(&manager.binary)?;
+            println!(
+                "AppShelf background service and tray enabled (systemd user service + autostart)"
+            );
+            return Ok(());
         }
         Some("--disable-service") => {
-            return appshelf::service::uninstall_service();
+            appshelf::service::uninstall_service()?;
+            println!("AppShelf background service and tray disabled");
+            return Ok(());
         }
         Some("--service-status") => {
             return appshelf::service::status_service();
@@ -290,7 +361,7 @@ fn main() -> Result<()> {
     let setup = !forced_shelf && args.is_empty() && appshelf::selfupdate::appimage_path().is_some();
     let ui = ui_path(&resources)?;
     if !setup {
-        ensure_tray_running(&manager.binary);
+        let _ = service::start_tray(&manager.binary);
     }
     // Opening a file goes straight to the compact installer; the full shelf is
     // only worth loading when AppShelf is started on its own.

@@ -1,4 +1,4 @@
-use crate::manager::Manager;
+use crate::manager::{Manager, APP_ID};
 use ksni::{
     menu::{MenuItem, StandardItem},
     Category, Status, ToolTip, Tray, TrayMethods,
@@ -13,7 +13,7 @@ pub struct AppShelfTray {
 
 impl Tray for AppShelfTray {
     fn id(&self) -> String {
-        "org.omarchy.appshelf".into()
+        APP_ID.into()
     }
     fn category(&self) -> Category {
         Category::ApplicationStatus
@@ -36,7 +36,27 @@ impl Tray for AppShelfTray {
         // Always AppShelf's own icon — Status::NeedsAttention already conveys
         // pending updates, and swapping in a stock glyph made the tray look
         // like a different application.
-        "org.omarchy.appshelf".into()
+        APP_ID.into()
+    }
+    /// Hosts resolve `icon_name` through their own icon theme, and Qt-based
+    /// ones (Quickshell, and so Omarchy's bar) cache a name that missed for the
+    /// life of the process. A bar started before AppShelf was installed
+    /// therefore renders the host's missing-icon placeholder forever. Handing
+    /// over the directory the icon actually lives in makes the lookup a file
+    /// read instead, so the tray is correct on first install without a
+    /// re-login.
+    fn icon_theme_path(&self) -> String {
+        self.manager
+            .resources
+            .join("packaging")
+            .to_string_lossy()
+            .into_owned()
+    }
+    /// `Status::NeedsAttention` sends hosts to the attention icon, which
+    /// defaults to empty — leaving the tray blank exactly when there are
+    /// updates to notice.
+    fn attention_icon_name(&self) -> String {
+        self.icon_name()
     }
     fn tool_tip(&self) -> ToolTip {
         let description = if self.updates_count > 0 {
@@ -126,7 +146,12 @@ impl AppShelfTray {
     pub fn check_now(&mut self, notify_if_none: bool) -> usize {
         let mut count = 0;
         let mut names = Vec::new();
+        // System packages are pacman's to update, and the tray does not speak
+        // for pacman; they are skipped rather than counted as up to date.
         for app in self.manager.list() {
+            if app["kind"].as_str() == Some("package") {
+                continue;
+            }
             let id = app["id"].as_str().unwrap_or_default();
             let name = app["name"].as_str().unwrap_or_default();
             if let Ok(res) = self.manager.check_update(id) {
@@ -140,12 +165,13 @@ impl AppShelfTray {
         self.updates_count = count;
         self.update_names = names.clone();
 
+        let icon = format!("--icon={}", notify_icon(&self.manager));
         if count > 0 {
             let body = format!("Updates available for:\n{}", names.join("\n"));
             let _ = Command::new("notify-send")
                 .args([
                     "--app-name=AppShelf",
-                    "--icon=org.omarchy.appshelf",
+                    &icon,
                     "AppImage Updates Available",
                     &body,
                 ])
@@ -154,13 +180,24 @@ impl AppShelfTray {
             let _ = Command::new("notify-send")
                 .args([
                     "--app-name=AppShelf",
-                    "--icon=org.omarchy.appshelf",
+                    &icon,
                     "AppShelf",
                     "All AppImages are up to date.",
                 ])
                 .status();
         }
         count
+    }
+}
+
+/// Notification daemons resolve icon names through the same theme cache tray
+/// hosts do, so hand them the file directly when it is there.
+fn notify_icon(manager: &Manager) -> String {
+    let file = manager.resources.join(format!("packaging/{APP_ID}.png"));
+    if file.is_file() {
+        file.to_string_lossy().into_owned()
+    } else {
+        APP_ID.into()
     }
 }
 
@@ -189,6 +226,9 @@ pub async fn run_tray(manager: Arc<Manager>) -> anyhow::Result<()> {
                 let mut count = 0;
                 let mut names = Vec::new();
                 for app in mgr.list() {
+                    if app["kind"].as_str() == Some("package") {
+                        continue;
+                    }
                     let id = app["id"].as_str().unwrap_or_default();
                     let name = app["name"].as_str().unwrap_or_default();
                     if let Ok(res) = mgr.check_update(id) {
@@ -201,10 +241,11 @@ pub async fn run_tray(manager: Arc<Manager>) -> anyhow::Result<()> {
                 }
                 if count > 0 {
                     let body = format!("Updates available for:\n{}", names.join("\n"));
+                    let icon = format!("--icon={}", notify_icon(&mgr));
                     let _ = Command::new("notify-send")
                         .args([
                             "--app-name=AppShelf",
-                            "--icon=org.omarchy.appshelf",
+                            &icon,
                             "AppImage Updates Available",
                             &body,
                         ])

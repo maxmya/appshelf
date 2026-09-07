@@ -129,7 +129,15 @@ pub fn check_update(app_path: &Path) -> Result<UpdateCheckResult> {
             })
         }
     };
+    check_descriptor(&info, Some(app_path))
+}
 
+/// Resolve what an `.upd_info` descriptor points at. `local` is the file to
+/// compare against; without one — AppShelf checking its own releases from a
+/// copy installed out of the AppImage — there is nothing to checksum, so the
+/// caller decides what "newer" means from the release tag.
+pub fn check_descriptor(info: &str, local: Option<&Path>) -> Result<UpdateCheckResult> {
+    let info = info.trim().to_string();
     let parts: Vec<&str> = info.split('|').collect();
     match parts[0] {
         "gh-releases-zsync" if parts.len() >= 5 => {
@@ -199,7 +207,7 @@ pub fn check_update(app_path: &Path) -> Result<UpdateCheckResult> {
                 if let Ok(zbytes) = curl_get(zurl, &["User-Agent: AppShelf"], Some("0-2047")) {
                     let zhdr = parse_zsync_header(&zbytes);
 
-                    if let Some(remote_sha1) = &zhdr.sha1 {
+                    if let (Some(remote_sha1), Some(app_path)) = (&zhdr.sha1, local) {
                         if let Ok(local_sha1) = runtime::sha1(app_path) {
                             if local_sha1.eq_ignore_ascii_case(remote_sha1) {
                                 return Ok(UpdateCheckResult {
@@ -249,7 +257,7 @@ pub fn check_update(app_path: &Path) -> Result<UpdateCheckResult> {
             let zbytes = curl_get(&zsync_url, &["User-Agent: AppShelf"], Some("0-2047"))?;
             let zhdr = parse_zsync_header(&zbytes);
 
-            let has_update = if let Some(remote_sha1) = &zhdr.sha1 {
+            let has_update = if let (Some(remote_sha1), Some(app_path)) = (&zhdr.sha1, local) {
                 let local_sha1 = runtime::sha1(app_path)?;
                 !local_sha1.eq_ignore_ascii_case(remote_sha1)
             } else {

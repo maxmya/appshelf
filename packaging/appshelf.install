@@ -1,0 +1,15 @@
+# AppShelf adds application/x-alpm-package to the shared MIME database and a
+# desktop entry that claims it, so both caches have to be rebuilt for a
+# .pkg.tar.zst to reach AppShelf when it is opened.
+post_install() {
+  update-mime-database /usr/share/mime >/dev/null 2>&1
+  update-desktop-database -q /usr/share/applications >/dev/null 2>&1
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  post_install
+}

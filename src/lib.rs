@@ -1,6 +1,7 @@
 pub mod discovery;
 pub mod install;
 pub mod manager;
+pub mod package;
 pub mod runtime;
 pub mod selfupdate;
 pub mod service;

@@ -10,6 +10,20 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+/// Everything AppShelf can open. `application/x-alpm-package` is AppShelf's
+/// own contribution to the shared MIME database — see
+/// `packaging/org.omarchy.appshelf.mime.xml` — because an Arch package is a
+/// plain compressed tarball that the desktop would otherwise class with every
+/// other one.
+const MIMES: &[&str] = &[
+    "application/vnd.appimage",
+    "application/x-alpm-package",
+    "application/vnd.debian.binary-package",
+    "application/x-rpm",
+];
+/// The one whose previous owner is saved and given back. AppImages are what
+/// AppShelf displaces from an established handler; nothing else on an Omarchy
+/// box claims a `.deb`.
 const MIME: &str = "application/vnd.appimage";
 
 /// What an install should do about the `application/vnd.appimage` handler.
@@ -42,6 +56,22 @@ fn is_default_opener() -> bool {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == format!("{APP_ID}.desktop"))
         .unwrap_or(false)
+}
+/// Publish the Arch package MIME type into the user's share of the shared
+/// database. Without it `.pkg.tar.zst` is just another compressed tarball and
+/// no association could name it.
+fn install_mime_type(resources: &Path, data: &Path) -> Result<()> {
+    let source = resources.join(format!("packaging/{APP_ID}.mime.xml"));
+    if !source.is_file() {
+        return Ok(());
+    }
+    let packages = data.join("mime/packages");
+    fs::create_dir_all(&packages)?;
+    fs::copy(source, packages.join(format!("{APP_ID}.xml")))?;
+    let _ = Command::new("update-mime-database")
+        .arg(data.join("mime"))
+        .status();
+    Ok(())
 }
 /// Everything the setup window needs to describe this machine: whether AppShelf
 /// is already installed, at which version, and who currently opens AppImages.
@@ -137,6 +167,7 @@ pub fn install(resources: &Path, association: Association) -> Result<()> {
             &format!("Exec={} %f", desktop_exec(&destination.join("appshelf"))),
         ),
     )?;
+    install_mime_type(resources, &data)?;
     let icon = data.join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg"));
     fs::create_dir_all(icon.parent().unwrap())?;
     fs::copy(resources.join(format!("packaging/{APP_ID}.svg")), icon)?;
@@ -163,10 +194,11 @@ pub fn install(resources: &Path, association: Association) -> Result<()> {
         }
         ensure!(
             Command::new("xdg-mime")
-                .args(["default", &format!("{APP_ID}.desktop"), MIME])
+                .args(["default", &format!("{APP_ID}.desktop")])
+                .args(MIMES)
                 .status()?
                 .success(),
-            "Could not register AppImage association"
+            "Could not register the AppShelf file associations"
         );
     }
     // Giving the association back is only meaningful if we hold it and saved
@@ -185,7 +217,7 @@ pub fn install(resources: &Path, association: Association) -> Result<()> {
         "Installed {}{}",
         binary.display(),
         if association == Association::Claim {
-            " with Flea/AppImage integration"
+            " as the opener for AppImages and packages"
         } else {
             ""
         }
@@ -197,48 +229,72 @@ pub fn restore_association() -> Result<()> {
     let saved: Value =
         serde_json::from_slice(&fs::read(&backup).context("No saved file association")?)?;
     let previous = saved["previous"].as_str().unwrap_or_default();
-    let output = Command::new("xdg-mime")
-        .args(["query", "default", MIME])
-        .output()?;
-    if String::from_utf8_lossy(&output.stdout).trim() == format!("{APP_ID}.desktop") {
-        if !previous.is_empty() {
-            ensure!(
-                Command::new("xdg-mime")
-                    .args(["default", previous, MIME])
-                    .status()?
-                    .success(),
-                "Failed to restore association"
-            );
-        } else {
-            let config = env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home().join(".config"));
-            for path in [
-                config.join("mimeapps.list"),
-                data_home().join("applications/mimeapps.list"),
-            ] {
-                if let Ok(body) = fs::read_to_string(&path) {
-                    let mut out = String::new();
-                    for line in body.lines() {
-                        if let Some(value) = line.strip_prefix(&format!("{MIME}=")) {
+    // Only the AppImage association had an owner worth remembering, so only it
+    // is handed back to a named application. The package types are simply
+    // released: nothing held them before AppShelf did.
+    let mine = format!("{APP_ID}.desktop");
+    let held: Vec<&str> = MIMES
+        .iter()
+        .copied()
+        .filter(|mime| {
+            Command::new("xdg-mime")
+                .args(["query", "default", mime])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == mine)
+                .unwrap_or(false)
+        })
+        .collect();
+    if held.contains(&MIME) && !previous.is_empty() {
+        ensure!(
+            Command::new("xdg-mime")
+                .args(["default", previous, MIME])
+                .status()?
+                .success(),
+            "Failed to restore association"
+        );
+    }
+    // Whatever is left is dropped by name from the user's own mimeapps lists;
+    // there is no xdg-mime verb for "no default", so the entry has to go.
+    let release: Vec<&str> = held
+        .into_iter()
+        .filter(|mime| !(*mime == MIME && !previous.is_empty()))
+        .collect();
+    if !release.is_empty() {
+        let config = env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config"));
+        for path in [
+            config.join("mimeapps.list"),
+            data_home().join("applications/mimeapps.list"),
+        ] {
+            if let Ok(body) = fs::read_to_string(&path) {
+                let mut out = String::new();
+                for line in body.lines() {
+                    let released = release.iter().find_map(|mime| {
+                        line.strip_prefix(&format!("{mime}="))
+                            .map(|value| (*mime, value))
+                    });
+                    match released {
+                        Some((mime, value)) => {
                             let values: Vec<_> = value
                                 .split(';')
-                                .filter(|v| !v.is_empty() && *v != format!("{APP_ID}.desktop"))
+                                .filter(|v| !v.is_empty() && *v != mine)
                                 .collect();
                             if !values.is_empty() {
-                                out.push_str(&format!("{MIME}={};\n", values.join(";")));
+                                out.push_str(&format!("{mime}={};\n", values.join(";")));
                             }
-                        } else {
+                        }
+                        None => {
                             out.push_str(line);
                             out.push('\n');
                         }
                     }
-                    fs::write(path, out)?;
                 }
+                fs::write(path, out)?;
             }
         }
     }
     fs::remove_file(backup)?;
-    println!("Previous AppImage file association restored. Apps and launchers kept.");
+    println!("Previous file associations restored. Apps and launchers kept.");
     Ok(())
 }

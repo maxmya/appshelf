@@ -3,7 +3,7 @@ name = "appshelf"
 version = "0.5.0"
 edition = "2021"
 license = "MIT"
-description = "Keyboard-first AppImage management for Omarchy"
+description = "Keyboard-first management of AppImages and system packages for Omarchy"
 repository = "https://github.com/maxmya/appshelf"
 
 [dependencies]
