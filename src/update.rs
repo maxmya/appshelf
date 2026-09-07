@@ -371,8 +371,18 @@ pub fn apply_update(manager: &Manager, id: &str) -> Result<Value> {
         "An installation with the updated version hash already exists"
     );
 
-    let (_, icon) =
-        runtime::metadata(&runtime, &new_target).unwrap_or_else(|_| (name.clone(), None));
+    let (_, version, icon) = runtime::metadata(&runtime, &new_target)
+        .unwrap_or_else(|_| (name.clone(), String::new(), None));
+    // The build that was downloaded now, not the one the record was written
+    // for. `latest_version` is the release tag the update server named, which
+    // is the only version there is when the file itself declares none.
+    let version = if !version.is_empty() {
+        version
+    } else if let Some(tag) = check.latest_version.clone() {
+        runtime::version_from_filename(&tag)
+    } else {
+        String::new()
+    };
 
     let new_record = crate::manager::Record {
         name: name.clone(),
@@ -381,6 +391,7 @@ pub fn apply_update(manager: &Manager, id: &str) -> Result<Value> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
         format,
+        version,
         settings,
         source: old_record.source,
         source_modified: old_record.source_modified,

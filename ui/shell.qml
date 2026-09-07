@@ -12,7 +12,12 @@ ShellRoot {
     id: root
     property var apps: []
     property var discovered: []
-    property var allApps: apps.concat(discovered)
+    // The found section can be folded away: on a machine with a busy Downloads
+    // folder it is longer than the shelf itself, and it is not what the window
+    // is for.
+    property bool foundOpen: true
+    property bool showIgnored: false
+    property var allApps: apps.concat(discovered.filter(a => !a.ignored || showIgnored))
     property string importSource: ""
     property var preview: null
     property var removal: null
@@ -23,7 +28,14 @@ ShellRoot {
     property bool failed: false
     property string status: "Opening your shelf…"
     property string selectedId: ""
-    property var filtered: allApps.filter(a => a.name.toLowerCase().includes(search.text.toLowerCase()))
+    property var matching: allApps.filter(a => a.name.toLowerCase().includes(search.text.toLowerCase()))
+    property var filtered: foundOpen ? matching : matching.filter(a => !a.unmanaged)
+    // The first scan and every rescan afterwards: the window is reading the
+    // registry and walking the filesystem, and has nothing final to show yet.
+    readonly property bool scanning: !ready || (busy && ["list", "install", "uninstall", "update", "ignore", "unignore"].indexOf(activeCommand) >= 0)
+    readonly property int foundMatchCount: matching.filter(a => a.unmanaged).length
+    readonly property int ignoredCount: discovered.filter(a => a.ignored).length
+    readonly property int foundCount: discovered.length - ignoredCount
     property var selected: allApps.find(a => a.id === selectedId) || null
     property real detailsWidth: 270
     property bool detailsVisible: true
@@ -37,6 +49,9 @@ ShellRoot {
     // by the backend with every reply.
     property var preferences: null
     property string pendingAction: ""
+    /// The command the backend is working on right now, so the window can say
+    /// which kind of wait this is rather than only that it is busy.
+    property string activeCommand: ""
     property var selfUpdate: null
     property string selfFeedback: ""
     property string selfStatusType: ""
@@ -62,6 +77,141 @@ ShellRoot {
 
     function isPackage(app) { return !!(app && app.kind === "package"); }
 
+    /// The shelf itself, as an icon: three boards with things standing on
+    /// them. While a scan runs the things arrive one after another, left to
+    /// right and top to bottom, so the wait looks like what it is — the shelf
+    /// being filled. Standing still it is simply the logo.
+    component ShelfIcon: Item {
+        id: shelfIcon
+        property bool running: false
+        property color tint: Theme.accent
+        property real iconSize: 22
+        // One continuous 0…1 sweep drives every item, so they stay in step
+        // without a timer or nine separate animations.
+        property real phase: 0
+        readonly property int columns: 3
+        readonly property int rows: 3
+        implicitWidth: iconSize
+        implicitHeight: iconSize
+        NumberAnimation on phase {
+            from: 0; to: 1
+            duration: 1600
+            loops: Animation.Infinite
+            running: shelfIcon.running
+        }
+        Column {
+            anchors.centerIn: parent
+            spacing: Math.max(1, Math.round(shelfIcon.iconSize * 0.07))
+            Repeater {
+                model: shelfIcon.rows
+                Item {
+                    id: shelfBoard
+                    required property int index
+                    width: shelfIcon.iconSize
+                    height: Math.round(shelfIcon.iconSize * 0.26)
+                    Row {
+                        anchors.left: parent.left
+                        anchors.leftMargin: Math.round(shelfIcon.iconSize * 0.08)
+                        anchors.bottom: plank.top
+                        spacing: Math.max(1, Math.round(shelfIcon.iconSize * 0.09))
+                        Repeater {
+                            model: shelfIcon.columns
+                            Rectangle {
+                                required property int index
+                                width: Math.max(1, Math.round(shelfIcon.iconSize * 0.17))
+                                height: Math.round(shelfIcon.iconSize * (0.13 + 0.05 * ((shelfBoard.index + index) % 3)))
+                                color: shelfIcon.tint
+                                opacity: {
+                                    if (!shelfIcon.running) return 1;
+                                    const slot = (shelfBoard.index * shelfIcon.columns + index) / (shelfIcon.rows * shelfIcon.columns);
+                                    const since = shelfIcon.phase - slot;
+                                    const age = since < 0 ? since + 1 : since;
+                                    return 0.2 + 0.8 * Math.max(0, 1 - age * 1.8);
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        id: plank
+                        anchors.bottom: parent.bottom
+                        width: shelfIcon.iconSize
+                        height: Math.max(1, Math.round(shelfIcon.iconSize * 0.08))
+                        color: shelfIcon.tint
+                    }
+                }
+            }
+        }
+    }
+
+    /// The rule between two parts of the list. The found section draws the same
+    /// heading whether it is open (from the first found row) or folded shut
+    /// (from the list footer), so it is one component used twice.
+    component SectionHeading: Column {
+        id: heading
+        property string label: ""
+        property string trailing: ""
+        property bool collapsible: false
+        property bool open: true
+        property string action: ""
+        signal toggled()
+        signal actioned()
+        topPadding: Theme.scale(14)
+        bottomPadding: Theme.scale(6)
+        spacing: Theme.scale(8)
+        Rectangle { width: heading.width; height: 1; color: Theme.line }
+        Item {
+            width: heading.width
+            height: headingRow.implicitHeight
+            MouseArea {
+                anchors.fill: parent
+                enabled: heading.collapsible
+                cursorShape: Qt.PointingHandCursor
+                onClicked: heading.toggled()
+            }
+            RowLayout {
+                id: headingRow
+                anchors.fill: parent
+                spacing: Theme.scale(8)
+                ShelfText {
+                    visible: heading.collapsible
+                    text: heading.open ? "▾" : "▸"
+                    color: Theme.secondary
+                    font.pixelSize: Theme.smallSize
+                }
+                ShelfText {
+                    text: heading.label
+                    color: Theme.secondary
+                    font.pixelSize: Theme.smallSize
+                    Accessible.role: Accessible.Button
+                    Accessible.name: heading.collapsible ? heading.label + (heading.open ? ", shown, click to hide" : ", hidden, click to show") : heading.label
+                }
+                ShelfText {
+                    visible: heading.trailing !== ""
+                    text: heading.trailing
+                    color: Theme.secondary
+                    font.pixelSize: Theme.smallSize
+                }
+                Item { Layout.fillWidth: true }
+                // Declared after the heading's own MouseArea so it takes the
+                // click when it is the thing under the pointer.
+                ShelfText {
+                    visible: heading.action !== ""
+                    text: heading.action
+                    color: Theme.accent
+                    font.pixelSize: Theme.smallSize
+                    Accessible.role: Accessible.Button
+                    Accessible.name: heading.action
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -Theme.scale(4)
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: heading.actioned()
+                    }
+                }
+            }
+        }
+    }
+
     function toggleDetails() {
         detailsVisible = !detailsVisible;
         status = detailsVisible ? "Side panel shown" : "Side panel hidden";
@@ -83,16 +233,29 @@ ShellRoot {
     function size(bytes) {
         return bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + " GB" : (bytes / 1048576).toFixed(1) + " MB";
     }
+    /// The line under an application's name. Version first, because it is the
+    /// one thing that differs between two rows with the same name. A package
+    /// installed by pacman has no file of its own left to measure.
+    function detail(app) {
+        if (!app) return "";
+        if (app.missing) return "File missing";
+        var parts = [];
+        if (app.version) parts.push(app.version);
+        parts.push(app.format);
+        if (!isPackage(app) || app.unmanaged) parts.push(size(app.size));
+        return parts.join("  ·  ");
+    }
     function send(command, values) {
         if (!ready || busy) return;
         busy = true;
         failed = false;
+        activeCommand = command;
         // pacman runs in its own terminal and sits there for as long as the
         // user takes to answer it, which is a different wait to describe than
         // a file copy.
         const waitingOnPacman = (command === "install" && previewIsPackage)
                                 || (command === "uninstall" && removalIsPackage);
-        status = waitingOnPacman ? "Waiting for pacman in its terminal…" : ({inspect: "Reading file…", install: "Copying and installing…", uninstall: "Removing application…", configure: "Saving launch settings…", list: "Refreshing…", reveal: "Opening file manager…", launch: "Starting application…", "check-update": "Checking for updates…", update: "Downloading and installing update…", "check-all-updates": "Checking every application…", "self-check-update": "Checking for a new AppShelf…", "self-update": "Downloading and installing AppShelf…", "tray-start": "Starting the tray…", "tray-stop": "Stopping the tray…", "service-enable": "Enabling tray autostart…", "service-disable": "Disabling tray autostart…", preferences: "Refreshing settings…"})[command] || "Working…";
+        status = waitingOnPacman ? "Waiting for pacman in its terminal…" : ({inspect: "Reading file…", install: "Copying and installing…", uninstall: "Removing application…", configure: "Saving launch settings…", list: "Refreshing…", ignore: "Leaving out of scanning…", unignore: "Scanning this file again…", reveal: "Opening file manager…", launch: "Starting application…", "check-update": "Checking for updates…", update: "Downloading and installing update…", "check-all-updates": "Checking every application…", "self-check-update": "Checking for a new AppShelf…", "self-update": "Downloading and installing AppShelf…", "tray-start": "Starting the tray…", "tray-stop": "Stopping the tray…", "service-enable": "Enabling tray autostart…", "service-disable": "Disabling tray autostart…", preferences: "Refreshing settings…"})[command] || "Working…";
         backend.write(JSON.stringify(Object.assign({command: command}, values || {})) + "\n");
     }
     function inspect(path, importing) {
@@ -147,11 +310,32 @@ ShellRoot {
         }
     }
     function revealSelected() {
-        send("reveal", selected ? (selected.unmanaged && !selectedIsPackage ? {path: selected.path} : {id: selected.id}) : {});
+        send("reveal", selected ? (selected.unmanaged ? {path: selected.path} : {id: selected.id}) : {});
     }
     function removeSelected() {
         if (!selected || selected.unmanaged || busy) return;
         removal = selected; failed = false; removeDialog.open();
+    }
+    /// Ignoring is not removing: the file is left exactly where it is, and the
+    /// shelf simply stops offering it. Reversible from the same section.
+    function ignoreSelected() {
+        if (!selected || !selected.unmanaged || busy) return;
+        const ignoring = !selected.ignored;
+        if (ignoring && !showIgnored) selectedId = "";
+        send(ignoring ? "ignore" : "unignore", {path: selected.path});
+    }
+    function toggleFound() {
+        foundOpen = !foundOpen;
+        // A hidden row must not stay selected: the panel would go on offering
+        // actions for something the list no longer shows.
+        if (!foundOpen && selected && selected.unmanaged) selectedId = "";
+        status = foundOpen ? "Found applications shown" : "Found applications hidden";
+    }
+    function toggleIgnored() {
+        showIgnored = !showIgnored;
+        if (!showIgnored && selected && selected.ignored) selectedId = "";
+        if (showIgnored) foundOpen = true;
+        status = showIgnored ? "Ignored files shown" : "Ignored files hidden";
     }
     function focusList() {
         list.forceActiveFocus();
@@ -169,6 +353,7 @@ ShellRoot {
             return;
         }
         busy = false;
+        activeCommand = "";
         if (message.apps !== undefined) apps = message.apps;
         if (message.discovered !== undefined) discovered = message.discovered;
         if (message.preferences !== undefined) preferences = message.preferences;
@@ -387,12 +572,6 @@ ShellRoot {
                     }
 
                     ShelfText {
-                        text: "▤"
-                        color: Theme.accent
-                        font.pixelSize: Math.min(26, Math.round(Theme.fontSize * 1.8))
-                        visible: root.activeView === "shelf"
-                    }
-                    ShelfText {
                         text: "AppShelf"
                         font.bold: true
                         font.pixelSize: Theme.fontSize + 2
@@ -500,7 +679,7 @@ ShellRoot {
                     Layout.bottomMargin: Theme.scale(root.isNarrow ? 8 : 12)
                     spacing: Theme.scale(root.isNarrow ? 8 : 16)
                     ShelfText { text: "APPLICATIONS"; color: Theme.secondary; font.pixelSize: Theme.smallSize }
-                    ShelfText { text: root.shelfCount + " on the shelf · " + root.packageCount + " packages · " + root.discovered.length + " found"; color: Theme.accent; font.pixelSize: Theme.smallSize }
+                    ShelfText { text: root.shelfCount + " on the shelf · " + root.packageCount + " packages · " + root.foundCount + " found" + (root.ignoredCount ? " · " + root.ignoredCount + " ignored" : ""); color: Theme.accent; font.pixelSize: Theme.smallSize }
                     Item { Layout.fillWidth: true }
                 }
 
@@ -526,6 +705,26 @@ ShellRoot {
                             else if (event.key === Qt.Key_Escape) { search.text = ""; event.accepted = true; }
                         }
                         ScrollBar.vertical: ScrollBar {}
+                        // Folded shut, the found section has no first row to
+                        // carry its heading. It is always the last section, so
+                        // the footer is where that heading belongs.
+                        footer: Item {
+                            width: list.width
+                            height: visible ? foundFooter.implicitHeight : 0
+                            visible: !root.foundOpen && root.discovered.length > 0
+                            SectionHeading {
+                                id: foundFooter
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                label: "FOUND ON YOUR COMPUTER"
+                                collapsible: true
+                                open: false
+                                trailing: root.foundCount + (root.foundCount === 1 ? " file" : " files")
+                                action: root.ignoredCount ? (root.showIgnored ? "Hide " + root.ignoredCount + " ignored" : "Show " + root.ignoredCount + " ignored") : ""
+                                onToggled: root.toggleFound()
+                                onActioned: root.toggleIgnored()
+                            }
+                        }
                         delegate: Item {
                             id: appRow
                             required property var modelData
@@ -540,17 +739,19 @@ ShellRoot {
                             width: list.width
                             height: (sectionStart ? sectionHeader.implicitHeight : 0) + rowBody.height
 
-                            Column {
+                            SectionHeading {
                                 id: sectionHeader
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.top: parent.top
                                 visible: appRow.sectionStart
-                                topPadding: Theme.scale(14)
-                                bottomPadding: Theme.scale(6)
-                                spacing: Theme.scale(8)
-                                Rectangle { width: sectionHeader.width; height: 1; color: Theme.line }
-                                ShelfText { text: appRow.sectionLabel; color: Theme.secondary; font.pixelSize: Theme.smallSize }
+                                label: appRow.sectionLabel
+                                collapsible: appRow.section === "found"
+                                open: true
+                                trailing: appRow.section === "found" ? root.foundMatchCount + (root.foundMatchCount === 1 ? " file" : " files") : ""
+                                action: appRow.section === "found" && root.ignoredCount ? (root.showIgnored ? "Hide " + root.ignoredCount + " ignored" : "Show " + root.ignoredCount + " ignored") : ""
+                                onToggled: root.toggleFound()
+                                onActioned: root.toggleIgnored()
                             }
 
                             Rectangle {
@@ -560,7 +761,7 @@ ShellRoot {
                                 anchors.bottom: parent.bottom
                                 height: Theme.rowHeight + Theme.scale(12)
                                 Accessible.role: Accessible.ListItem
-                                Accessible.name: appRow.modelData.name + (appRow.modelData.unmanaged ? ", discovered, Enter to add" : (appRow.modelData.kind === "package" ? ", system package, Enter to launch" : ", managed, Enter to launch"))
+                                Accessible.name: appRow.modelData.name + (appRow.modelData.unmanaged ? (appRow.modelData.ignored ? ", found, ignored" : ", found, Enter to add") : (appRow.modelData.kind === "package" ? ", system package, Enter to launch" : ", managed, Enter to launch"))
                                 color: root.selectedId === appRow.modelData.id ? Qt.alpha(Theme.accent, 0.12) : (mouse.containsMouse ? Theme.surface : "transparent")
                                 border.width: root.selectedId === appRow.modelData.id ? 1 : 0
                                 border.color: Qt.alpha(Theme.accent, 0.5)
@@ -575,10 +776,10 @@ ShellRoot {
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: Theme.scale(3)
-                                        ShelfText { text: appRow.modelData.name; Layout.fillWidth: true; elide: Text.ElideRight; font.bold: true }
+                                        ShelfText { text: appRow.modelData.name + (appRow.modelData.ignored ? "   (ignored)" : ""); Layout.fillWidth: true; elide: Text.ElideRight; font.bold: true; opacity: appRow.modelData.ignored ? 0.6 : 1 }
                                         // The section header already says these
                                         // were found rather than installed.
-                                        ShelfText { text: appRow.modelData.missing ? "File missing" : (appRow.modelData.kind === "package" ? appRow.modelData.version + "  ·  " + appRow.modelData.format : appRow.modelData.format + "  ·  " + root.size(appRow.modelData.size)); Layout.fillWidth: true; elide: Text.ElideRight; color: appRow.modelData.missing ? Theme.danger : Theme.secondary; font.pixelSize: Theme.smallSize }
+                                        ShelfText { text: root.detail(appRow.modelData); Layout.fillWidth: true; elide: Text.ElideRight; color: appRow.modelData.missing ? Theme.danger : Theme.secondary; font.pixelSize: Theme.smallSize }
                                     }
                                     ShelfText { text: "↗"; color: Theme.secondary; visible: !root.isCompact }
                                 }
@@ -595,12 +796,18 @@ ShellRoot {
                     ColumnLayout {
                         anchors.centerIn: parent
                         width: Math.min(parent.width - Theme.scale(30), Theme.scale(360))
-                        visible: root.filtered.length === 0
+                        visible: root.filtered.length === 0 && !(!root.foundOpen && root.discovered.length > 0)
                         spacing: Theme.scale(root.isNarrow ? 12 : 18)
-                        ShelfText { Layout.alignment: Qt.AlignHCenter; text: "▤"; color: Theme.accent; font.pixelSize: Theme.scale(root.isNarrow ? 36 : 48) }
-                        ShelfText { Layout.alignment: Qt.AlignHCenter; text: search.text ? "No matching applications" : "A place for your applications"; font.pixelSize: Theme.fontSize + Theme.scale(3); font.bold: true }
-                        ShelfText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: search.text ? "Try another name." : "Drop an AppImage or a package here,\nchoose a file, or open one from Flea."; color: Theme.secondary; lineHeight: 1.5 }
-                        ShelfButton { Layout.alignment: Qt.AlignHCenter; visible: !search.text; text: "Choose a file"; enabled: root.ready && !root.busy; onClicked: picker.open() }
+                        ShelfIcon {
+                            Layout.alignment: Qt.AlignHCenter
+                            iconSize: Theme.scale(root.isNarrow ? 36 : 48)
+                            Layout.preferredWidth: iconSize
+                            Layout.preferredHeight: iconSize
+                            running: root.scanning
+                        }
+                        ShelfText { Layout.alignment: Qt.AlignHCenter; text: root.scanning ? "Filling your shelf…" : (search.text ? "No matching applications" : "A place for your applications"); font.pixelSize: Theme.fontSize + Theme.scale(3); font.bold: true }
+                        ShelfText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: root.scanning ? "Reading what is installed and looking through your folders." : (search.text ? "Try another name." : "Drop an AppImage or a package here,\nchoose a file, or open one from Flea."); color: Theme.secondary; lineHeight: 1.5 }
+                        ShelfButton { Layout.alignment: Qt.AlignHCenter; visible: !search.text && !root.scanning; text: "Choose a file"; enabled: root.ready && !root.busy; onClicked: picker.open() }
                     }
                     DropArea {
                         anchors.fill: parent
@@ -686,21 +893,28 @@ ShellRoot {
                                     lineHeight: 1.5
                                     color: Theme.secondary
                                     text: !root.selected
+                                          // A found file is asked about before pacman is: it is a
+                                          // file on disk whichever format it happens to be, and
+                                          // nothing here has been installed yet.
                                           ? "Keep your applications together and find them in your launcher.\n\nAppImages, and Arch, Debian and RPM packages."
-                                          : root.selectedIsPackage
-                                            // pacman owns these files, so the panel reports what
-                                            // pacman knows rather than anything AppShelf stores.
-                                            ? (root.selected.version + "  ·  " + root.selected.format
-                                               + (root.selected.description ? "\n\n" + root.selected.description : "")
-                                               + "\n\nAdded " + new Date(root.selected.installed * 1000).toLocaleDateString()
-                                               + "\nInstalled system-wide by pacman"
-                                               + (root.selected.source ? "\nFrom " + root.selected.source : "")
-                                               + (root.selected.launchable ? "" : "\n\nNo desktop launcher; this package is a library or a command."))
-                                            : root.selected.unmanaged
-                                              ? root.selected.path + "\n\nAdd a managed copy to use AppShelf launch settings. The existing installation is kept."
-                                              : root.size(root.selected.size) + "  ·  " + root.selected.format + "\nFUSE-free · uruntime\n\nInstalled " + new Date(root.selected.installed * 1000).toLocaleDateString() + "\nIsolation: " + root.selected.isolation + (root.selected.update_info ? "\nUpdates: embedded (" + root.selected.update_info.split("|")[0] + ")" : "")
+                                          : root.selected.unmanaged
+                                            ? (root.detail(root.selected) + "\n\n" + root.selected.path
+                                               + (root.selectedIsPackage
+                                                  ? "\n\nInstall it and pacman takes it from here; AppShelf remembers which package it was."
+                                                  : "\n\nAdd a managed copy to use AppShelf launch settings. The existing installation is kept.")
+                                               + (root.selected.ignored ? "\n\nIgnored — left out of scanning until you show it again. The file itself is untouched." : ""))
+                                            : root.selectedIsPackage
+                                              // pacman owns these files, so the panel reports what
+                                              // pacman knows rather than anything AppShelf stores.
+                                              ? (root.selected.version + "  ·  " + root.selected.format
+                                                 + (root.selected.description ? "\n\n" + root.selected.description : "")
+                                                 + "\n\nAdded " + new Date(root.selected.installed * 1000).toLocaleDateString()
+                                                 + "\nInstalled system-wide by pacman"
+                                                 + (root.selected.source ? "\nFrom " + root.selected.source : "")
+                                                 + (root.selected.launchable ? "" : "\n\nNo desktop launcher; this package is a library or a command."))
+                                              : (root.selected.version ? "Version " + root.selected.version + "\n" : "") + root.size(root.selected.size) + "  ·  " + root.selected.format + "\nFUSE-free · uruntime\n\nInstalled " + new Date(root.selected.installed * 1000).toLocaleDateString() + "\nIsolation: " + root.selected.isolation + (root.selected.update_info ? "\nUpdates: embedded (" + root.selected.update_info.split("|")[0] + ")" : "")
                                 }
-                                ShelfButton { Layout.fillWidth: true; visible: !!root.selected; text: root.selected && root.selected.unmanaged ? "Add to AppShelf  ↵" : "Launch  ↗"; primary: true; enabled: root.ready && !root.busy && !!root.selected && !root.selected.missing && !(root.selectedIsPackage && !root.selected.launchable); onClicked: root.activateSelected() }
+                                ShelfButton { Layout.fillWidth: true; visible: !!root.selected; text: root.selected && root.selected.unmanaged ? (root.selectedIsPackage ? "Install with pacman  ↵" : "Add to AppShelf  ↵") : "Launch  ↗"; primary: true; enabled: root.ready && !root.busy && !!root.selected && !root.selected.missing && !(root.selectedIsPackage && !root.selected.launchable); onClicked: root.activateSelected() }
                                 ShelfButton {
                                     Layout.fillWidth: true
                                     visible: !!root.selected && !root.selected.unmanaged && !root.selectedIsPackage && root.updateResult && root.updateResult.has_update
@@ -767,6 +981,7 @@ ShellRoot {
                                 }
                                 ShelfButton { Layout.fillWidth: true; visible: !!root.selected; text: "Show in Flea"; enabled: root.ready && !root.busy; onClicked: root.revealSelected() }
                                 ShelfButton { Layout.fillWidth: true; visible: !!root.selected && !root.selected.unmanaged && !root.selectedIsPackage; text: "Launch settings…"; enabled: root.ready && !root.busy; onClicked: root.editSelected() }
+                                ShelfButton { Layout.fillWidth: true; visible: !!root.selected && !!root.selected.unmanaged; text: root.selected && root.selected.ignored ? "Stop ignoring" : "Ignore"; enabled: root.ready && !root.busy; onClicked: root.ignoreSelected() }
                                 Item { Layout.fillHeight: true }
                                 ShelfButton { Layout.fillWidth: true; visible: !!root.selected && !root.selected.unmanaged; text: root.selectedIsPackage ? "Remove package…" : "Uninstall…"; destructive: true; enabled: root.ready && !root.busy; onClicked: root.removeSelected() }
                                 ShelfText { Layout.fillWidth: true; text: "↑↓ / j k  Navigate\nEnter     Launch / add\nCtrl+E    Settings\nCtrl+U    Check updates\nCtrl+B    Toggle side panel\nCtrl+,    AppShelf settings\nCtrl + -  Zoom in / out\nCtrl 0    Reset zoom\nF1        All shortcuts"; color: Theme.secondary; font.pixelSize: Theme.smallSize; lineHeight: 1.6 }
@@ -1111,7 +1326,7 @@ ShellRoot {
             contentItem: ColumnLayout {
                 spacing: Theme.scale(18)
                 ShelfText { text: root.previewIsPackage ? "Install system package" : (root.preview && root.preview.external ? "Add existing AppImage" : "Install AppImage"); font.pixelSize: Theme.fontSize + Theme.scale(6); font.bold: true }
-                ShelfText { Layout.fillWidth: true; text: root.preview ? (root.previewIsPackage ? root.preview.name + " " + root.preview.version : root.preview.name) : ""; wrapMode: Text.Wrap; color: Theme.accent; font.pixelSize: Theme.fontSize + Theme.scale(2) }
+                ShelfText { Layout.fillWidth: true; text: root.preview ? (root.preview.version ? root.preview.name + " " + root.preview.version : root.preview.name) : ""; wrapMode: Text.Wrap; color: Theme.accent; font.pixelSize: Theme.fontSize + Theme.scale(2) }
                 ShelfText { Layout.fillWidth: true; text: root.preview ? root.preview.path : ""; wrapMode: Text.WrapAnywhere; color: Theme.secondary; font.pixelSize: Theme.smallSize }
                 ShelfText {
                     Layout.fillWidth: true

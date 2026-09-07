@@ -179,7 +179,7 @@ ShellRoot {
                         visible: !!root.preview
                         text: !root.preview ? ""
                               : root.isPackage ? (root.preview.version + "  ·  " + root.preview.arch + "  ·  " + root.preview.format)
-                                               : (root.size(root.preview.size) + " · " + root.preview.format)
+                                               : ((root.preview.version ? root.preview.version + " · " : "") + root.size(root.preview.size) + " · " + root.preview.format)
                         color: Theme.secondary
                         font.pixelSize: Theme.smallSize
                         elide: Text.ElideRight

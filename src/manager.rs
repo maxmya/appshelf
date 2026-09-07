@@ -40,6 +40,12 @@ pub struct Record {
     pub size: u64,
     pub installed: u64,
     pub format: String,
+    /// What the AppImage calls this build: its `X-AppImage-Version`, or the
+    /// version in the filename it was installed from. Empty when neither says.
+    /// Recorded at install time — reading it back out of a SquashFS image on
+    /// every list would cost an unsquashfs per application per refresh.
+    #[serde(default)]
+    pub version: String,
     #[serde(flatten)]
     pub settings: Settings,
     #[serde(default)]
@@ -246,16 +252,27 @@ impl Manager {
         ensure!(path.is_file(), "Choose an application file");
         let (format, _) = runtime::filesystem(&path)?;
         let runtime = runtime::runtime_path(&self.resources)?;
-        let (name, note, icon) = match runtime::metadata(&runtime, &path) {
-            Ok((name, icon)) => (name, String::new(), icon),
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let (name, version, note, icon) = match runtime::metadata(&runtime, &path) {
+            Ok((name, version, icon)) => (name, version, String::new(), icon),
             Err(_) => (
                 path.file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned(),
+                String::new(),
                 "Filename used; embedded metadata could not be read.".into(),
                 None,
             ),
+        };
+        let version = if version.is_empty() {
+            runtime::version_from_filename(&filename)
+        } else {
+            version
         };
         // The managed ID is the content hash, so the same hash answers whether
         // this exact file is already on the shelf. Flea opens AppShelf with a
@@ -289,6 +306,7 @@ impl Manager {
             "kind": "appimage",
             "path": path,
             "name": name,
+            "version": version,
             "size": path.metadata()?.len(),
             "format": format,
             "note": note,
@@ -310,7 +328,20 @@ impl Manager {
                     let path = folder.join("app.AppImage");
                     let icon = folder.join("icon.png");
                     let update_info = runtime::update_info(&path).ok().flatten();
-                    apps.push(json!({"id":id,"kind":"appimage","name":record.name,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified,"update_info":update_info}));
+                    // Applications installed before AppShelf recorded versions
+                    // still have the filename they came from.
+                    let version = if record.version.is_empty() {
+                        runtime::version_from_filename(
+                            Path::new(&record.source)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .as_ref(),
+                        )
+                    } else {
+                        record.version.clone()
+                    };
+                    apps.push(json!({"id":id,"kind":"appimage","name":record.name,"version":version,"size":record.size,"installed":record.installed,"format":record.format,"path":path,"icon":if icon.is_file(){url::Url::from_file_path(icon).ok().map(|u|u.to_string()).unwrap_or_default()}else{String::new()},"missing":!path.is_file(),"environment":record.settings.environment,"isolation":record.settings.isolation,"unmanaged":false,"source":record.source,"source_modified":record.source_modified,"update_info":update_info}));
                 }
             }
         }
@@ -338,22 +369,37 @@ impl Manager {
         let id = runtime::sha256(&target)?;
         let folder = self.folder(&id)?;
         ensure!(!folder.exists(), "This exact AppImage is already installed");
-        let (name, icon) = runtime::metadata(&runtime, &target).unwrap_or_else(|_| {
+        let (name, version, icon) = runtime::metadata(&runtime, &target).unwrap_or_else(|_| {
             (
                 source
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned(),
+                String::new(),
                 None,
             )
         });
+        // The copy on the shelf is named `app.AppImage`, so a version the file
+        // itself does not declare has to be read from the file it came from.
+        let version = if version.is_empty() {
+            runtime::version_from_filename(
+                source
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref(),
+            )
+        } else {
+            version
+        };
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
         let record = Record {
             name: name.clone(),
             size: target.metadata()?.len(),
             installed: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
             format,
+            version,
             settings,
             source: source.to_string_lossy().into_owned(),
             source_modified: modified(&source),

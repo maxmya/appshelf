@@ -214,6 +214,90 @@ fn settings_and_protocol_reject_invalid_input() {
     assert_eq!(replies[3]["event"], "quit");
 }
 
+#[test]
+fn a_version_is_read_from_the_build_that_declares_one() {
+    // What publishers actually write on the file, including the trap: the 64
+    // of x86_64 is not a version, and a name without one has none to find.
+    assert_eq!(
+        runtime::version_from_filename("Spagitty_0.6.0_amd64.AppImage"),
+        "0.6.0"
+    );
+    assert_eq!(
+        runtime::version_from_filename("helium-0.16.5.1-x86_64.AppImage"),
+        "0.16.5.1"
+    );
+    assert_eq!(
+        runtime::version_from_filename("v1.4-x86_64.AppImage"),
+        "1.4"
+    );
+    assert_eq!(
+        runtime::version_from_filename("hyprmoncfg-bin-1.16.2-1-x86_64.pkg.tar.zst"),
+        "1.16.2"
+    );
+    assert_eq!(
+        runtime::version_from_filename("linuxdeploy-plugin-appimage"),
+        ""
+    );
+    assert_eq!(runtime::version_from_filename("AppRun-x86_64"), "");
+}
+
+/// Ignoring is not removing: the file stays exactly where it is, the shelf
+/// simply stops offering it, and saying so again brings it back.
+#[test]
+fn an_ignored_file_is_left_alone_and_can_be_shown_again() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("appimages");
+    fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("Thing_1.2.3_amd64.AppImage");
+    fs::rename(stub(tmp.path()), &image).unwrap();
+    let path = image.to_str().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_appshelf"))
+        .arg("--backend")
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            format!(
+                "{{\"command\":\"ignore\",\"path\":\"{path}\"}}\n\
+                 {{\"command\":\"unignore\",\"path\":\"{path}\"}}\n\
+                 {{\"command\":\"quit\"}}\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let replies: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+
+    let row = |reply: &serde_json::Value| -> serde_json::Value {
+        reply["discovered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["path"].as_str() == Some(path))
+            .cloned()
+            .unwrap_or_else(|| panic!("{path} was not offered"))
+    };
+    // Found, with the version its name carries, before anything is ignored.
+    assert_eq!(row(&replies[0])["ignored"], false);
+    assert_eq!(row(&replies[0])["version"], "1.2.3");
+    assert_eq!(row(&replies[1])["ignored"], true);
+    assert_eq!(row(&replies[2])["ignored"], false);
+    assert!(image.is_file(), "ignoring must not touch the file");
+}
+
 struct Fixture {
     _temp: TempDir,
     images: Vec<(String, PathBuf)>,
@@ -231,7 +315,7 @@ impl Fixture {
         fs::set_permissions(dir.join("AppRun"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
             dir.join("fixture.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Runtime Fixture\nExec=AppRun\nIcon=org.test.Fixture\n",
+            "[Desktop Entry]\nType=Application\nName=Runtime Fixture\nExec=AppRun\nIcon=org.test.Fixture\nX-AppImage-Version=2.5.0\n",
         )
         .unwrap();
         fs::write(
@@ -283,8 +367,10 @@ fn real_squashfs_and_dwarfs_metadata_and_fuse_free_isolation() {
     let runtime = runtime::runtime_path(&resources()).unwrap();
     for (kind, image) in &fixtures.images {
         assert_eq!(&runtime::filesystem(image).unwrap().0, kind);
-        let (name, icon) = runtime::metadata(&runtime, image).unwrap();
+        let (name, version, icon) = runtime::metadata(&runtime, image).unwrap();
         assert_eq!(name, "Runtime Fixture");
+        // The version the build declares beats anything its filename says.
+        assert_eq!(version, "2.5.0");
         assert!(icon.unwrap().starts_with(b"\x89PNG"));
         let tmp = TempDir::new().unwrap();
         let m = manager(tmp.path());

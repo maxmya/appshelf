@@ -224,13 +224,21 @@ Press **F1** at any time on the main screen for the in-app guide.
 
 ## Bring your existing apps
 
-AppShelf scans for AppImages at startup and when you press `Ctrl+R`. It checks:
+AppShelf scans at startup and when you press `Ctrl+R` for every format it can install — AppImages, and Arch, Debian and RPM packages. It checks:
 
-- `~/Applications`, `~/AppImages`, `~/.local/bin`, `~/.local/opt`, `$XDG_DATA_HOME/appimages` and `/opt`.
+- `~/Downloads`, `~/Desktop` (or wherever `user-dirs.dirs` puts them), `~/Applications`, `~/AppImages`, `~/.local/bin`, `~/.local/opt`, `$XDG_DATA_HOME/appimages` and `/opt`.
 - User and system desktop entries, following absolute file arguments in `Exec` and `TryExec`.
-- AppImage content signatures, so the `.AppImage` extension is not required.
+- File content rather than file names, so the `.AppImage` extension is not required and a download saved as `foo.deb.1` is still recognised.
 
-Discovered apps are marked **Found**. Select one and press **Enter** to add it to AppShelf.
+A package file is listed under the name and version it declares, not the name of the file. One that pacman already has at that version is not offered again.
+
+Discovered apps are marked **Found**. Select one and press **Enter** to add an AppImage to the shelf, or to hand a package to pacman. The shelf icon fills up while a scan is running.
+
+### Hiding what you do not want offered
+
+Press **Ignore** in the side panel to leave a found file out of scanning. Nothing is deleted or moved — the file stays exactly where it is, and the shelf simply stops listing it. The count of ignored files appears beside the section heading; **Show N ignored** brings them back into the list, where **Stop ignoring** undoes it. Ignored paths are kept in `$XDG_DATA_HOME/appshelf/ignored.json`, and an entry whose file has gone is dropped on its own.
+
+The **Found on your computer** heading folds the whole section away when you click it, which is worth doing on a machine with a busy Downloads folder.
 
 **Import creates a managed copy.** It does not take over or delete the original image, launcher, settings or manager registry. Both launchers may remain visible until you remove the old installation with its original manager. Configure AppShelf's copy before launching if the old app used special environment or isolation settings.
 
@@ -264,6 +272,7 @@ Paths below use `$XDG_DATA_HOME`, normally `~/.local/share`.
 | `appshelf/program/` | Installed Rust binary, QML and uruntime |
 | `appshelf/apps/<sha256>/` | Managed AppImage, metadata record and optional icon |
 | `appshelf/packages.json` | Which system packages AppShelf installed, and where each came from |
+| `appshelf/ignored.json` | Found files you asked the shelf to stop offering |
 | `appshelf/data/<sha256>/` | Optional isolated home/config/data/cache/state |
 | `appshelf/logs/<sha256>.log` | Output from the most recent launch |
 | `applications/org.omarchy.appshelf.app.<sha256>.desktop` | Managed app launcher |
@@ -373,9 +382,8 @@ A source checkout needs `--fetch-runtime` once before it can inspect anything: w
 - System packages need pacman, so they work on Arch-based systems only. Converted `.deb` and `.rpm` packages declare no dependencies and run no maintainer scripts, so an application may still need libraries installed by hand.
 - Packages are installed and removed through a terminal, and AppShelf blocks until that terminal finishes or is closed.
 - FUSE-free launching extracts into temporary storage and needs enough free space. Large apps can take longer to start.
-- Metadata uses embedded desktop names and PNG icons; unsupported metadata falls back to the filename and an initial.
+- Metadata uses embedded desktop names and PNG icons; unsupported metadata falls back to the filename and an initial. An AppImage's version comes from the `X-AppImage-Version` key in its desktop entry, and from its filename when it declares none — so a build that says neither shows no version at all. It is recorded when the application is installed, not re-read afterwards.
 - Updates are checked automatically but installed only when you ask, and only for AppImages that publish an `.upd_info` descriptor. There is no application catalogue to download from, no in-place adoption of another manager's installation, and no automatic migration of external settings. System package updates are pacman's, not AppShelf's.
-- Discovery scans for AppImages only. A `.deb` sitting in `~/Downloads` is not an installed application, so it is not reported as one.
 - An abrupt power loss can leave staging directories; automatic recovery is planned.
 - Application compatibility still depends on its bundled dependencies and host architecture.
 

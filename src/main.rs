@@ -124,6 +124,12 @@ fn serve(manager: Manager) -> Result<()> {
                     )?;
                     Ok(Value::Null)
                 }
+                // Dismissing a found file is not an action on an application:
+                // nothing is installed, so the path is the only handle there is.
+                "ignore" | "unignore" => {
+                    discovery::set_ignored(path()?, command == "ignore")?;
+                    Ok(Value::Null)
+                }
                 "check-update" => manager.check_update(id()?),
                 "update" => manager.update(id()?),
                 "check-all-updates" => Ok(check_all(&manager)),
@@ -152,7 +158,16 @@ fn serve(manager: Manager) -> Result<()> {
         })();
         match result {
             Ok(result) => {
-                if ["list", "install", "uninstall", "update"].contains(&command) {
+                if [
+                    "list",
+                    "install",
+                    "uninstall",
+                    "update",
+                    "ignore",
+                    "unignore",
+                ]
+                .contains(&command)
+                {
                     discovered = discovery::discover(&manager, &[]);
                 }
                 emit(

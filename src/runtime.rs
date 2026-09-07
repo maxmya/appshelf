@@ -277,7 +277,53 @@ pub fn desktop_value(body: &str, key: &str) -> Option<String> {
     }
     None
 }
-pub fn metadata(runtime: &Path, path: &Path) -> Result<(String, Option<Vec<u8>>)> {
+
+/// A version as it may be shown to someone: one line, printable, short.
+fn clean_version(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .strip_prefix(['v', 'V'])
+        .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or(value);
+    value
+        .chars()
+        .take_while(|c| !c.is_control())
+        .filter(|c| !c.is_whitespace())
+        .take(48)
+        .collect()
+}
+
+/// The version an AppImage or package file carries in its own name.
+///
+/// Publishers name their builds `App_1.2.3_amd64.AppImage` far more reliably
+/// than they fill in `X-AppImage-Version`, so a filename is the fallback when
+/// the file itself declares nothing. A candidate needs a dot to count, which
+/// is what keeps the `64` of `x86_64` from reading as a version.
+pub fn version_from_filename(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let stem = if let Some(at) = lower.find(".pkg.tar") {
+        &name[..at]
+    } else {
+        [".appimage", ".deb", ".rpm"]
+            .iter()
+            .find_map(|ext| lower.strip_suffix(ext).map(|s| &name[..s.len()]))
+            .unwrap_or(name)
+    };
+    stem.split(['-', '_'])
+        .map(clean_version)
+        .find(|token| {
+            token.contains('.')
+                && token.starts_with(|c: char| c.is_ascii_digit())
+                && token.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+        .unwrap_or_default()
+}
+
+/// The name, version and icon an AppImage declares in its own desktop entry.
+/// `X-AppImage-Version` is the AppImage convention; where it is missing the
+/// build is unversioned as far as the file itself is concerned, and the caller
+/// falls back to the filename.
+pub fn metadata(runtime: &Path, path: &Path) -> Result<(String, String, Option<Vec<u8>>)> {
     let (kind, offset) = filesystem(path)?;
     let p = path.to_string_lossy().to_string();
     let o = offset.to_string();
@@ -356,6 +402,9 @@ pub fn metadata(runtime: &Path, path: &Path) -> Result<(String, Option<Vec<u8>>)
         .chars()
         .take(150)
         .collect();
+    let version = desktop_value(&body, "X-AppImage-Version")
+        .map(|v| clean_version(&v))
+        .unwrap_or_default();
     let icon_name = desktop_value(&body, "Icon").unwrap_or_default();
     // Icon= is usually a bare theme name, which is routinely reverse-DNS
     // ("org.gnome.Loupe"). file_stem() would read ".Loupe" as an extension, so
@@ -374,7 +423,7 @@ pub fn metadata(runtime: &Path, path: &Path) -> Result<(String, Option<Vec<u8>>)
         })
         .and_then(|s| read(s, 2 * 1024 * 1024).ok())
         .filter(|b| b.starts_with(b"\x89PNG\r\n\x1a\n"));
-    Ok((name, icon))
+    Ok((name, version, icon))
 }
 pub fn fetch(resources: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

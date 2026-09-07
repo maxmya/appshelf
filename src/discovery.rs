@@ -1,15 +1,58 @@
 use crate::{
-    manager::{home, modified, Manager},
-    runtime, selfupdate,
+    manager::{atomic_json, data_home, home, local_path, modified, Manager},
+    package, runtime, selfupdate,
 };
+use anyhow::Result;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
+
+/// Paths the user has told the shelf to stop offering. Kept as a plain list of
+/// paths rather than content hashes: what is being dismissed is "this file in
+/// this folder", and a rebuilt download at the same path is the same offer.
+pub fn ignored_path() -> PathBuf {
+    data_home().join("appshelf/ignored.json")
+}
+pub fn ignored() -> BTreeSet<String> {
+    fs::read(ignored_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BTreeSet<String>>(&bytes).ok())
+        .unwrap_or_default()
+}
+/// Add or remove one path. A path that no longer exists is dropped on the way
+/// past: an ignored download that was deleted has nothing left to ignore.
+pub fn set_ignored(value: &str, ignore: bool) -> Result<()> {
+    let mut list: BTreeSet<String> = ignored()
+        .into_iter()
+        .filter(|entry| Path::new(entry).is_file())
+        .collect();
+    if ignore {
+        // Resolved the same way discovery resolves it, or the entry would
+        // never match the row it was meant to dismiss.
+        let path = local_path(value)?;
+        anyhow::ensure!(path.is_file(), "That file no longer exists");
+        anyhow::ensure!(
+            list.len() < 1000,
+            "Too many ignored files; clear some before ignoring more"
+        );
+        list.insert(path.to_string_lossy().into_owned());
+    } else {
+        // An entry whose file has gone is already dropped above; one that is
+        // still there is removed by the path the window has for it.
+        let path = local_path(value)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| value.to_string());
+        list.remove(&path);
+    }
+    let target = ignored_path();
+    fs::create_dir_all(target.parent().unwrap())?;
+    atomic_json(&target, &list)
+}
 
 /// `~/Downloads` and `~/Desktop`, honouring `user-dirs.dirs` so localised or
 /// relocated folders are scanned too.
@@ -130,6 +173,9 @@ pub fn discover(manager: &Manager, extra: &[PathBuf]) -> Vec<Value> {
         }
     }
     let managed = manager.list();
+    let dismissed = ignored();
+    // pacman is asked once, and only if a package file actually turns up.
+    let mut present: Option<BTreeMap<String, String>> = None;
     let mut found = Vec::new();
     for (path, (name, desktop)) in candidates {
         if path.starts_with(&manager.root)
@@ -140,28 +186,77 @@ pub fn discover(manager: &Manager, extra: &[PathBuf]) -> Vec<Value> {
         {
             continue;
         }
-        let Ok((format, _)) = runtime::filesystem(&path) else {
-            continue;
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        // Every format the shelf can install is worth offering, not only the
+        // ones it keeps a copy of: a `.deb` sitting in Downloads is as
+        // installable here as an AppImage beside it.
+        let mut declared_name = String::new();
+        let (kind, format, package_kind, version) = match runtime::filesystem(&path) {
+            Ok((format, _)) => {
+                // AppShelf is not one of the applications AppShelf manages:
+                // installing its own AppImage would leave a second copy and a
+                // second launcher. It reports its own version and updates from
+                // Settings instead.
+                if selfupdate::is_appshelf(&path) {
+                    continue;
+                }
+                (
+                    "appimage",
+                    format,
+                    String::new(),
+                    runtime::version_from_filename(&filename),
+                )
+            }
+            Err(_) => {
+                let Some(package) = package::detect(&path) else {
+                    continue;
+                };
+                // A package pacman already has at this version is installed,
+                // whoever installed it, and offering it again would be an
+                // offer to reinstall.
+                let info = package::inspect(&path, package).ok();
+                if let Some(info) = &info {
+                    let installed = present.get_or_insert_with(package::installed);
+                    if installed.get(&info.name) == Some(&info.version) {
+                        continue;
+                    }
+                }
+                // `claude-desktop-1.40609.0-1-x86_64.pkg.tar` is a filename;
+                // `claude-desktop` is what the package calls itself, and what
+                // it will be called once pacman has it.
+                if let Some(info) = &info {
+                    declared_name = info.name.clone();
+                }
+                (
+                    "package",
+                    package.label().to_string(),
+                    package.id().to_string(),
+                    info.as_ref()
+                        .map(|i| i.original_version.clone())
+                        .unwrap_or_else(|| runtime::version_from_filename(&filename)),
+                )
+            }
         };
-        // AppShelf is not one of the applications AppShelf manages: installing
-        // its own AppImage would leave a second copy and a second launcher.
-        // It reports its own version and updates from Settings instead.
-        if selfupdate::is_appshelf(&path) {
-            continue;
-        }
         let id = format!(
             "external-{:x}",
             Sha256::digest(path.as_os_str().as_encoded_bytes())
         );
-        let name = if name.is_empty() {
+        let name = if !name.is_empty() {
+            name
+        } else if !declared_name.is_empty() {
+            declared_name
+        } else {
             path.file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
-        } else {
-            name
         };
-        found.push(json!({"id":id,"name":name,"path":path,"source":path,"desktop":desktop,"size":fs::metadata(&path).map(|m|m.len()).unwrap_or(0),"format":format,"icon":"","unmanaged":true,"missing":false,"environment":{},"isolation":"off","installed":0}));
+        let ignored = dismissed.contains(path.to_string_lossy().as_ref());
+        found.push(json!({"id":id,"kind":kind,"package_kind":package_kind,"name":name,"version":version,"path":path,"source":path,"desktop":desktop,"size":fs::metadata(&path).map(|m|m.len()).unwrap_or(0),"format":format,"icon":"","unmanaged":true,"ignored":ignored,"missing":false,"environment":{},"isolation":"off","installed":0}));
     }
     found.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
     found
