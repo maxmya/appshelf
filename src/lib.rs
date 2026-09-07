@@ -1,3 +1,4 @@
+pub mod config;
 pub mod discovery;
 pub mod install;
 pub mod manager;

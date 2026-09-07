@@ -1,4 +1,5 @@
 singleton Theme 1.0 Theme.qml
 ShelfText 1.0 ShelfText.qml
 ShelfButton 1.0 ShelfButton.qml
+ShelfSwitch 1.0 ShelfSwitch.qml
 AppSettings 1.0 AppSettings.qml

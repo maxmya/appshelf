@@ -241,6 +241,42 @@ fn a_version_is_read_from_the_build_that_declares_one() {
     assert_eq!(runtime::version_from_filename("AppRun-x86_64"), "");
 }
 
+/// Drive the real backend over its own protocol in a home of its own, so a
+/// test never reads or writes the machine's actual shelf.
+fn backend(home: &Path, commands: &[String]) -> Vec<serde_json::Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_appshelf"))
+        .arg("--backend")
+        .env("HOME", home)
+        .env("XDG_DATA_HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut script = commands.join("\n");
+    script.push_str("\n{\"command\":\"quit\"}\n");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+fn found(reply: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
+    reply["discovered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["path"].as_str() == Some(path))
+        .cloned()
+}
+
 /// Ignoring is not removing: the file stays exactly where it is, the shelf
 /// simply stops offering it, and saying so again brings it back.
 #[test]
@@ -252,50 +288,67 @@ fn an_ignored_file_is_left_alone_and_can_be_shown_again() {
     fs::rename(stub(tmp.path()), &image).unwrap();
     let path = image.to_str().unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_appshelf"))
-        .arg("--backend")
-        .env("HOME", tmp.path())
-        .env("XDG_DATA_HOME", tmp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            format!(
-                "{{\"command\":\"ignore\",\"path\":\"{path}\"}}\n\
-                 {{\"command\":\"unignore\",\"path\":\"{path}\"}}\n\
-                 {{\"command\":\"quit\"}}\n"
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    let replies: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|s| serde_json::from_str(s).unwrap())
-        .collect();
-
-    let row = |reply: &serde_json::Value| -> serde_json::Value {
-        reply["discovered"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|a| a["path"].as_str() == Some(path))
-            .cloned()
-            .unwrap_or_else(|| panic!("{path} was not offered"))
-    };
+    let replies = backend(
+        tmp.path(),
+        &[
+            format!("{{\"command\":\"ignore\",\"path\":\"{path}\"}}"),
+            format!("{{\"command\":\"unignore\",\"path\":\"{path}\"}}"),
+        ],
+    );
+    let row = |reply: &serde_json::Value| found(reply, path).expect("was not offered");
     // Found, with the version its name carries, before anything is ignored.
     assert_eq!(row(&replies[0])["ignored"], false);
     assert_eq!(row(&replies[0])["version"], "1.2.3");
     assert_eq!(row(&replies[1])["ignored"], true);
     assert_eq!(row(&replies[2])["ignored"], false);
     assert!(image.is_file(), "ignoring must not touch the file");
+}
+
+/// Looking through someone's filesystem is a thing they get to say no to, so
+/// scanning is a preference, it switches the whole walk off, and it sticks.
+#[test]
+fn scanning_can_be_turned_off_entirely() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("appimages");
+    fs::create_dir_all(&dir).unwrap();
+    // As much of an Arch package as detection asks for: the name the format
+    // claims, and the compression magic underneath it.
+    let package = dir.join("thing-1.2.3-1-x86_64.pkg.tar.zst");
+    fs::write(&package, b"\x28\xb5\x2f\xfdnot really a package").unwrap();
+    let path = package.to_str().unwrap();
+
+    // An AppImage beside it, to prove the switch is not about packages only.
+    let image = dir.join("Thing_1.2.3_amd64.AppImage");
+    fs::rename(stub(tmp.path()), &image).unwrap();
+    let appimage = image.to_str().unwrap();
+
+    let replies = backend(
+        tmp.path(),
+        &[
+            r#"{"command":"set-scan","enabled":false}"#.into(),
+            r#"{"command":"set-scan","enabled":true}"#.into(),
+        ],
+    );
+    assert_eq!(replies[0]["preferences"]["scan"], true);
+    assert_eq!(found(&replies[0], path).unwrap()["kind"], "package");
+    assert!(found(&replies[0], appimage).is_some());
+
+    assert_eq!(replies[1]["preferences"]["scan"], false);
+    assert_eq!(replies[1]["discovered"].as_array().unwrap().len(), 0);
+
+    assert_eq!(replies[2]["preferences"]["scan"], true);
+    assert!(found(&replies[2], path).is_some());
+    assert!(found(&replies[2], appimage).is_some());
+
+    // The preference outlives the backend that set it.
+    let again = backend(
+        tmp.path(),
+        &[r#"{"command":"set-scan","enabled":false}"#.into()],
+    );
+    assert_eq!(again[0]["preferences"]["scan"], true);
+    let restarted = backend(tmp.path(), &[]);
+    assert_eq!(restarted[0]["preferences"]["scan"], false);
+    assert_eq!(restarted[0]["discovered"].as_array().unwrap().len(), 0);
 }
 
 struct Fixture {

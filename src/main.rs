@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use appshelf::{
-    discovery, install,
+    config, discovery, install,
     manager::{self, Manager, Settings},
     runtime, selfupdate, service,
 };
@@ -44,6 +44,7 @@ fn preferences(manager: &Manager) -> Value {
             .filter(|app| app["kind"].as_str() != Some("package"))
             .count(),
         "packages": appshelf::package::registry().len(),
+        "scan": config::load().scan,
     })
 }
 /// Check every managed application in one pass, so the window can offer the
@@ -75,8 +76,16 @@ fn emit(value: Value) {
     println!("{value}");
     let _ = io::stdout().flush();
 }
+/// The found list, or an empty one when the user has switched scanning off.
+fn scan(manager: &Manager) -> Vec<Value> {
+    if discovery::enabled() {
+        discovery::discover(manager, &[])
+    } else {
+        Vec::new()
+    }
+}
 fn serve(manager: Manager) -> Result<()> {
-    let mut discovered = discovery::discover(&manager, &[]);
+    let mut discovered = scan(&manager);
     emit(
         json!({"event":"ready","apps":manager.list(),"discovered":discovered,"preferences":preferences(&manager)}),
     );
@@ -130,6 +139,12 @@ fn serve(manager: Manager) -> Result<()> {
                     discovery::set_ignored(path()?, command == "ignore")?;
                     Ok(Value::Null)
                 }
+                "set-scan" => {
+                    let mut settings = config::load();
+                    settings.scan = request["enabled"].as_bool().context("Missing enabled")?;
+                    config::save(&settings)?;
+                    Ok(preferences(&manager))
+                }
                 "check-update" => manager.check_update(id()?),
                 "update" => manager.update(id()?),
                 "check-all-updates" => Ok(check_all(&manager)),
@@ -165,10 +180,11 @@ fn serve(manager: Manager) -> Result<()> {
                     "update",
                     "ignore",
                     "unignore",
+                    "set-scan",
                 ]
                 .contains(&command)
                 {
-                    discovered = discovery::discover(&manager, &[]);
+                    discovered = scan(&manager);
                 }
                 emit(
                     json!({"ok":true,"command":command,"result":result,"apps":manager.list(),"discovered":discovered,"preferences":preferences(&manager)}),
@@ -266,9 +282,12 @@ fn main() -> Result<()> {
         Some("--scan") => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(
-                    &json!({"apps":manager.list(),"discovered":discovery::discover(&manager,&[])})
-                )?
+                serde_json::to_string_pretty(&json!({
+                    "apps": manager.list(),
+                    // Said plainly, so an empty list is never a mystery.
+                    "scanning": discovery::enabled(),
+                    "discovered": scan(&manager),
+                }))?
             );
             return Ok(());
         }

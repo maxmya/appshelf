@@ -234,6 +234,8 @@ A package file is listed under the name and version it declares, not the name of
 
 Discovered apps are marked **Found**. Select one and press **Enter** to add an AppImage to the shelf, or to hand a package to pacman. The shelf icon fills up while a scan is running.
 
+**Settings → Scanning** switches the whole thing off. With it off nothing is walked, no desktop entries are read and the shelf shows only what it manages and what pacman installed for it. The choice is kept in `$XDG_DATA_HOME/appshelf/settings.json`.
+
 ### Hiding what you do not want offered
 
 Press **Ignore** in the side panel to leave a found file out of scanning. Nothing is deleted or moved — the file stays exactly where it is, and the shelf simply stops listing it. The count of ignored files appears beside the section heading; **Show N ignored** brings them back into the list, where **Stop ignoring** undoes it. Ignored paths are kept in `$XDG_DATA_HOME/appshelf/ignored.json`, and an entry whose file has gone is dropped on its own.
@@ -273,6 +275,7 @@ Paths below use `$XDG_DATA_HOME`, normally `~/.local/share`.
 | `appshelf/apps/<sha256>/` | Managed AppImage, metadata record and optional icon |
 | `appshelf/packages.json` | Which system packages AppShelf installed, and where each came from |
 | `appshelf/ignored.json` | Found files you asked the shelf to stop offering |
+| `appshelf/settings.json` | AppShelf's own preferences, such as whether to scan at all |
 | `appshelf/data/<sha256>/` | Optional isolated home/config/data/cache/state |
 | `appshelf/logs/<sha256>.log` | Output from the most recent launch |
 | `applications/org.omarchy.appshelf.app.<sha256>.desktop` | Managed app launcher |

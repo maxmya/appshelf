@@ -62,6 +62,7 @@ ShellRoot {
     readonly property bool modalOpen: installDialog.opened || removeDialog.opened || helpDialog.opened
     readonly property bool trayRunning: !!(preferences && preferences.tray_running)
     readonly property bool trayAutostart: !!(preferences && preferences.service_installed)
+    readonly property bool scanEnabled: !preferences || preferences.scan !== false
     readonly property string selfChannel: preferences ? String(preferences.channel) : ""
     readonly property bool selfUpdatable: selfChannel === "appimage" || selfChannel === "installed"
     readonly property bool trayUpdatesPending: !!(selfUpdate && selfUpdate.has_update) || !!(allUpdates && allUpdates.updates.length)
@@ -255,7 +256,7 @@ ShellRoot {
         // a file copy.
         const waitingOnPacman = (command === "install" && previewIsPackage)
                                 || (command === "uninstall" && removalIsPackage);
-        status = waitingOnPacman ? "Waiting for pacman in its terminal…" : ({inspect: "Reading file…", install: "Copying and installing…", uninstall: "Removing application…", configure: "Saving launch settings…", list: "Refreshing…", ignore: "Leaving out of scanning…", unignore: "Scanning this file again…", reveal: "Opening file manager…", launch: "Starting application…", "check-update": "Checking for updates…", update: "Downloading and installing update…", "check-all-updates": "Checking every application…", "self-check-update": "Checking for a new AppShelf…", "self-update": "Downloading and installing AppShelf…", "tray-start": "Starting the tray…", "tray-stop": "Stopping the tray…", "service-enable": "Enabling tray autostart…", "service-disable": "Disabling tray autostart…", preferences: "Refreshing settings…"})[command] || "Working…";
+        status = waitingOnPacman ? "Waiting for pacman in its terminal…" : ({inspect: "Reading file…", install: "Copying and installing…", uninstall: "Removing application…", configure: "Saving launch settings…", list: "Refreshing…", ignore: "Leaving out of scanning…", unignore: "Scanning this file again…", reveal: "Opening file manager…", launch: "Starting application…", "check-update": "Checking for updates…", update: "Downloading and installing update…", "check-all-updates": "Checking every application…", "self-check-update": "Checking for a new AppShelf…", "self-update": "Downloading and installing AppShelf…", "tray-start": "Starting the tray…", "tray-stop": "Stopping the tray…", "service-enable": "Enabling tray autostart…", "service-disable": "Disabling tray autostart…", preferences: "Refreshing settings…", "set-scan": "Saving and rescanning…"})[command] || "Working…";
         backend.write(JSON.stringify(Object.assign({command: command}, values || {})) + "\n");
     }
     function inspect(path, importing) {
@@ -679,7 +680,7 @@ ShellRoot {
                     Layout.bottomMargin: Theme.scale(root.isNarrow ? 8 : 12)
                     spacing: Theme.scale(root.isNarrow ? 8 : 16)
                     ShelfText { text: "APPLICATIONS"; color: Theme.secondary; font.pixelSize: Theme.smallSize }
-                    ShelfText { text: root.shelfCount + " on the shelf · " + root.packageCount + " packages · " + root.foundCount + " found" + (root.ignoredCount ? " · " + root.ignoredCount + " ignored" : ""); color: Theme.accent; font.pixelSize: Theme.smallSize }
+                    ShelfText { text: root.shelfCount + " on the shelf · " + root.packageCount + " packages" + (root.scanEnabled ? " · " + root.foundCount + " found" + (root.ignoredCount ? " · " + root.ignoredCount + " ignored" : "") : " · not scanning"); color: Theme.accent; font.pixelSize: Theme.smallSize }
                     Item { Layout.fillWidth: true }
                 }
 
@@ -984,7 +985,6 @@ ShellRoot {
                                 ShelfButton { Layout.fillWidth: true; visible: !!root.selected && !!root.selected.unmanaged; text: root.selected && root.selected.ignored ? "Stop ignoring" : "Ignore"; enabled: root.ready && !root.busy; onClicked: root.ignoreSelected() }
                                 Item { Layout.fillHeight: true }
                                 ShelfButton { Layout.fillWidth: true; visible: !!root.selected && !root.selected.unmanaged; text: root.selectedIsPackage ? "Remove package…" : "Uninstall…"; destructive: true; enabled: root.ready && !root.busy; onClicked: root.removeSelected() }
-                                ShelfText { Layout.fillWidth: true; text: "↑↓ / j k  Navigate\nEnter     Launch / add\nCtrl+E    Settings\nCtrl+U    Check updates\nCtrl+B    Toggle side panel\nCtrl+,    AppShelf settings\nCtrl + -  Zoom in / out\nCtrl 0    Reset zoom\nF1        All shortcuts"; color: Theme.secondary; font.pixelSize: Theme.smallSize; lineHeight: 1.6 }
                             }
                         }
                     }
@@ -1104,28 +1104,11 @@ ShellRoot {
                                     ShelfText { text: "AppShelf " + (root.preferences ? root.preferences.version : ""); font.bold: true; font.pixelSize: Theme.fontSize + Theme.scale(6) }
                                     ShelfText {
                                         Layout.fillWidth: true
-                                        text: ({appimage: "Running as an AppImage · updates itself in place",
-                                                installed: "Installed copy · updates by reinstalling the latest release",
-                                                unmanaged: "Built from source or packaged · update it the way you installed it"})[root.selfChannel] || ""
-                                        color: Theme.secondary
-                                        font.pixelSize: Theme.smallSize
-                                        wrapMode: Text.WordWrap
-                                    }
-                                    ShelfText {
-                                        Layout.fillWidth: true
-                                        text: "A local application manager for Omarchy: AppImages on its own shelf, and Arch, Debian and RPM packages installed system-wide through pacman."
-                                        color: Theme.secondary
-                                        font.pixelSize: Theme.smallSize
-                                        wrapMode: Text.WordWrap
-                                        lineHeight: 1.35
-                                    }
-                                    ShelfText {
-                                        Layout.fillWidth: true
                                         visible: !!root.preferences
-                                        text: root.preferences
-                                              ? root.preferences.managed + (root.preferences.managed === 1 ? " AppImage on the shelf · " : " AppImages on the shelf · ")
-                                                + root.preferences.packages + (root.preferences.packages === 1 ? " package installed" : " packages installed")
-                                              : ""
+                                        text: !root.preferences ? "" :
+                                              ({appimage: "AppImage", installed: "Installed copy", unmanaged: "Built from source"})[root.selfChannel]
+                                              + "  ·  " + root.preferences.managed + " on the shelf"
+                                              + "  ·  " + root.preferences.packages + " packages"
                                         color: Theme.secondary
                                         font.pixelSize: Theme.smallSize
                                     }
@@ -1134,47 +1117,52 @@ ShellRoot {
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line }
 
                             ShelfText { text: "TRAY & BACKGROUND"; color: Theme.secondary; font.pixelSize: Theme.smallSize }
-                            ShelfText {
+                            ShelfSwitch {
                                 Layout.fillWidth: true
-                                text: root.trayRunning ? "The tray is running. It checks your applications for updates every four hours."
-                                                       : "The tray is not running. Nothing checks for updates in the background."
-                                color: root.trayRunning ? Theme.foreground : Theme.secondary
-                                wrapMode: Text.WordWrap
-                                lineHeight: 1.4
-                                font.pixelSize: Theme.smallSize
+                                text: "Run the tray in the background"
+                                checked: root.trayRunning
+                                enabled: root.ready && !root.busy
+                                onToggled: {
+                                    const wanted = checked;
+                                    checked = Qt.binding(() => root.trayRunning);
+                                    root.act(wanted ? "tray-start" : "tray-stop");
+                                }
                             }
-                            RowLayout {
+                            ShelfSwitch {
                                 Layout.fillWidth: true
-                                spacing: Theme.scale(8)
-                                ShelfButton {
-                                    text: root.pendingAction === "tray-start" ? "Starting… ◌" : "Start tray"
-                                    primary: !root.trayRunning
-                                    visible: !root.trayRunning
-                                    enabled: root.ready && !root.busy
-                                    onClicked: root.act("tray-start")
+                                text: "Start the tray at login"
+                                checked: root.trayAutostart
+                                enabled: root.ready && !root.busy
+                                onToggled: {
+                                    const wanted = checked;
+                                    checked = Qt.binding(() => root.trayAutostart);
+                                    root.act(wanted ? "service-enable" : "service-disable");
                                 }
-                                ShelfButton {
-                                    text: root.pendingAction === "tray-stop" ? "Stopping… ◌" : "Stop tray"
-                                    visible: root.trayRunning
-                                    enabled: root.ready && !root.busy
-                                    onClicked: root.act("tray-stop")
-                                }
-                                ShelfButton {
-                                    text: root.trayAutostart
-                                          ? (root.pendingAction === "service-disable" ? "Disabling… ◌" : "Don't start at login")
-                                          : (root.pendingAction === "service-enable" ? "Enabling… ◌" : "Start at login")
-                                    enabled: root.ready && !root.busy
-                                    onClicked: root.act(root.trayAutostart ? "service-disable" : "service-enable")
-                                }
-                                Item { Layout.fillWidth: true }
                             }
                             ShelfText {
                                 Layout.fillWidth: true
-                                text: root.trayAutostart ? "Autostart is on: a systemd user service and desktop entry bring the tray back with your session."
-                                                         : "Autostart is off: the tray only runs while AppShelf has started it."
+                                visible: root.trayRunning
+                                text: "Checking for updates every 4 hours."
                                 color: Theme.secondary
-                                wrapMode: Text.WordWrap
                                 font.pixelSize: Theme.smallSize
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line }
+
+                            ShelfText { text: "SCANNING"; color: Theme.secondary; font.pixelSize: Theme.smallSize }
+                            ShelfSwitch {
+                                Layout.fillWidth: true
+                                text: "Look through my computer for applications"
+                                // Clicking a Switch assigns `checked` and so
+                                // breaks this binding; restoring it hands the
+                                // decision back to the backend, which is the
+                                // one that knows whether the change took.
+                                checked: root.scanEnabled
+                                enabled: root.ready && !root.busy
+                                onToggled: {
+                                    const wanted = checked;
+                                    checked = Qt.binding(() => root.scanEnabled);
+                                    root.act("set-scan", {enabled: wanted});
+                                }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line }
 

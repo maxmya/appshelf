@@ -1,4 +1,5 @@
 use crate::{
+    config,
     manager::{atomic_json, data_home, home, local_path, modified, Manager},
     package, runtime, selfupdate,
 };
@@ -81,6 +82,14 @@ fn user_dirs() -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// Whether the user has asked the shelf to look through their filesystem.
+/// Callers ask this rather than `discover` asking it for them: what the shelf
+/// finds should depend on what is on the disk and nothing else, so the
+/// preference belongs at the call site where it can be seen.
+pub fn enabled() -> bool {
+    config::load().scan
 }
 
 /// Bounded, read-only discovery. No shell expansion and no candidate execution.
